@@ -21,8 +21,8 @@
 
 using Microsoft::WRL::ComPtr;
 
-int win_width = 1280;
-int win_height = 720;
+int win_width = 640;
+int win_height = 480;
 
 int main(int argc, const char **argv) {
 	if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
@@ -85,13 +85,14 @@ int main(int argc, const char **argv) {
 	rtv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 	CHECK_ERR(device->CreateDescriptorHeap(&rtv_heap_desc, IID_PPV_ARGS(&rtv_heap)));
 
-	const uint32_t rtv_descriptor_size = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+	const uint32_t rtv_descriptor_size =
+		device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
 	// Create render target descriptors for the swap chain's render targets
 	ComPtr<ID3D12Resource> render_targets[2];
 	{
 		D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = rtv_heap->GetCPUDescriptorHandleForHeapStart();
-		// Create a RTV for each frame.
+		// Create a RTV for each frame
 		for (int i = 0; i < 2; ++i) {
 			CHECK_ERR(swap_chain->GetBuffer(i, IID_PPV_ARGS(&render_targets[i])));
 			device->CreateRenderTargetView(render_targets[i].Get(), nullptr, rtv_handle);
@@ -100,7 +101,8 @@ int main(int argc, const char **argv) {
 	}
 
 	ComPtr<ID3D12CommandAllocator> cmd_allocator;
-	CHECK_ERR(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmd_allocator)));
+	CHECK_ERR(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+				IID_PPV_ARGS(&cmd_allocator)));
 
 	// Make the command list
 	ComPtr<ID3D12GraphicsCommandList> cmd_list;
@@ -120,8 +122,7 @@ int main(int argc, const char **argv) {
 		throw std::runtime_error("Failed to make fence event");
 	}
 
-	// TODO: build the command list to clear the frame color
-
+	int back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
 	bool done = false;
 	while (!done) {
 		SDL_Event event;
@@ -143,7 +144,62 @@ int main(int argc, const char **argv) {
 			}
 		}
 
-		// TODO: Execute the command list and sync the fence
+		// Build the command list to clear the frame color
+		CHECK_ERR(cmd_allocator->Reset());
+
+		ComPtr<ID3D12PipelineState> pipeline_state;
+		CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), pipeline_state.Get()));
+
+		// Back buffer will be used as render target
+		{
+			D3D12_RESOURCE_BARRIER res_barrier;
+			res_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			res_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			res_barrier.Transition.pResource = render_targets[back_buffer_idx].Get();
+			res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+			res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+			res_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			cmd_list->ResourceBarrier(1, &res_barrier);
+		}
+
+		D3D12_CPU_DESCRIPTOR_HANDLE render_target = rtv_heap->GetCPUDescriptorHandleForHeapStart();
+		render_target.ptr += rtv_descriptor_size * back_buffer_idx;
+
+		const std::array<float, 4> clear_color = {0.f, 0.f, 1.f, 1.f};
+		cmd_list->ClearRenderTargetView(render_target, clear_color.data(), 0, nullptr);
+
+		// Back buffer will now be used to present
+		{
+			D3D12_RESOURCE_BARRIER res_barrier;
+			res_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			res_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			res_barrier.Transition.pResource = render_targets[back_buffer_idx].Get();
+			res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+			res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+			res_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			cmd_list->ResourceBarrier(1, &res_barrier);
+		}
+
+		CHECK_ERR(cmd_list->Close());
+
+		// Execute the command list and present
+		std::array<ID3D12CommandList*, 1> cmd_lists = {cmd_list.Get()};
+		cmd_queue->ExecuteCommandLists(cmd_lists.size(), cmd_lists.data());
+		CHECK_ERR(swap_chain->Present(1, 0));
+
+		// Sync with the fence to wait for the frame to be presented
+		const uint32_t signal_val = fence_value;
+		CHECK_ERR(cmd_queue->Signal(fence.Get(), signal_val));
+		++fence_value;
+
+		if (fence->GetCompletedValue() < signal_val) {
+			CHECK_ERR(fence->SetEventOnCompletion(signal_val, fence_evt));
+			WaitForSingleObject(fence_evt, INFINITE);
+		}
+
+		// Update the back buffer index to the new back buffer now that the
+		// swap chain has swapped.
+		back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
 	}
 
 	SDL_DestroyWindow(window);
