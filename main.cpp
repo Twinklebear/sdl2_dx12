@@ -1,4 +1,6 @@
 #include <iostream>
+#include <thread>
+#include <chrono>
 #include <memory>
 #include <vector>
 #include <array>
@@ -108,23 +110,6 @@ int main(int argc, const char **argv) {
 	CHECK_ERR(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
 				IID_PPV_ARGS(&cmd_allocator)));
 
-	// Make the command list
-	ComPtr<ID3D12GraphicsCommandList> cmd_list;
-	CHECK_ERR(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_allocator.Get(),
-				nullptr, IID_PPV_ARGS(&cmd_list)));
-	CHECK_ERR(cmd_list->Close());
-
-	// Create the fence
-	ComPtr<ID3D12Fence> fence;
-	device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-	int fence_value = 1;
-
-	HANDLE fence_evt = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-	if (fence_evt == nullptr) {
-		std::cout << "Failed to make fence event\n";
-		throw std::runtime_error("Failed to make fence event");
-	}
-
 	// Load assets
 
 	// Make an empty root signature
@@ -166,7 +151,7 @@ int main(int argc, const char **argv) {
 
 		// Specify the vertex data layout
 		std::array<D3D12_INPUT_ELEMENT_DESC, 2> vertex_layout = {
-			D3D12_INPUT_ELEMENT_DESC{"POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0,
+			D3D12_INPUT_ELEMENT_DESC{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
 				D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
 			D3D12_INPUT_ELEMENT_DESC{"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16,
 				D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}
@@ -223,6 +208,12 @@ int main(int argc, const char **argv) {
 		CHECK_ERR(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline_state)));
 	}
 
+	// Make the command list
+	ComPtr<ID3D12GraphicsCommandList> cmd_list;
+	CHECK_ERR(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_allocator.Get(),
+				pipeline_state.Get(), IID_PPV_ARGS(&cmd_list)));
+	CHECK_ERR(cmd_list->Close());
+
 	// Create the VBO containing the triangle data
 	ComPtr<ID3D12Resource> vbo;
 	D3D12_VERTEX_BUFFER_VIEW vbo_view;
@@ -274,13 +265,25 @@ int main(int argc, const char **argv) {
 
 		// Setup the vertex buffer view
 		vbo_view.BufferLocation = vbo->GetGPUVirtualAddress();
-		vbo_view.StrideInBytes = sizeof(float) * 4;
+		vbo_view.StrideInBytes = sizeof(float) * 8;
 		vbo_view.SizeInBytes = sizeof(float) * vertex_data.size();
 
+	}
+
+	// Create the fence
+	ComPtr<ID3D12Fence> fence;
+	device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+	int fence_value = 1;
+
+	HANDLE fence_evt = CreateEvent(nullptr, false, false, nullptr);
+	if (fence_evt == nullptr) {
+		std::cout << "Failed to make fence event\n";
+		throw std::runtime_error("Failed to make fence event");
+	}
+	{
 		// Sync with the fence to wait for the assets to upload
-		const uint32_t signal_val = fence_value;
+		const uint32_t signal_val = fence_value++;
 		CHECK_ERR(cmd_queue->Signal(fence.Get(), signal_val));
-		++fence_value;
 
 		if (fence->GetCompletedValue() < signal_val) {
 			CHECK_ERR(fence->SetEventOnCompletion(signal_val, fence_evt));
@@ -293,14 +296,16 @@ int main(int argc, const char **argv) {
 	screen_bounds.bottom = win_height;
 
 	D3D12_VIEWPORT viewport = {0};
-	viewport.Width = screen_bounds.right;
-	viewport.Height = screen_bounds.bottom;
+	viewport.Width = static_cast<float>(win_width);
+	viewport.Height = static_cast<float>(win_height);
 	viewport.MinDepth = D3D12_MIN_DEPTH;
 	viewport.MaxDepth = D3D12_MAX_DEPTH;
 
 	int back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
 	bool done = false;
 	while (!done) {
+		using namespace std::chrono;
+		auto start_frame = high_resolution_clock::now();
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			if (event.type == SDL_QUIT) {
@@ -316,18 +321,19 @@ int main(int argc, const char **argv) {
 			if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
 				win_width = event.window.data1;
 				win_height = event.window.data2;
+
+				swap_chain->ResizeBuffers(2, win_width, win_height, DXGI_FORMAT_UNKNOWN, 0);
+
 				screen_bounds.right = win_width;
 				screen_bounds.bottom = win_height;
-				viewport.Width = screen_bounds.right;
-				viewport.Height = screen_bounds.bottom;
-				// It seems like resizing just works ok here?
+				viewport.Width = static_cast<float>(win_width);
+				viewport.Height = static_cast<float>(win_height);
 			}
 		}
 
 		// Build the command list to clear the frame color
 		CHECK_ERR(cmd_allocator->Reset());
 
-		ComPtr<ID3D12PipelineState> pipeline_state;
 		CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), pipeline_state.Get()));
 
 		cmd_list->SetGraphicsRootSignature(root_signature.Get());
@@ -350,7 +356,7 @@ int main(int argc, const char **argv) {
 		render_target.ptr += rtv_descriptor_size * back_buffer_idx;
 		cmd_list->OMSetRenderTargets(1, &render_target, false, nullptr);
 
-		const std::array<float, 4> clear_color = {0.f, 0.f, 1.f, 1.f};
+		const std::array<float, 4> clear_color = {0.f, 0.2f, 0.4f, 1.f};
 		cmd_list->ClearRenderTargetView(render_target, clear_color.data(), 0, nullptr);
 		cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		cmd_list->IASetVertexBuffers(0, 1, &vbo_view);
@@ -376,14 +382,17 @@ int main(int argc, const char **argv) {
 		CHECK_ERR(swap_chain->Present(1, 0));
 
 		// Sync with the fence to wait for the frame to be presented
-		const uint32_t signal_val = fence_value;
+		const uint32_t signal_val = fence_value++;
 		CHECK_ERR(cmd_queue->Signal(fence.Get(), signal_val));
-		++fence_value;
 
 		if (fence->GetCompletedValue() < signal_val) {
 			CHECK_ERR(fence->SetEventOnCompletion(signal_val, fence_evt));
 			WaitForSingleObject(fence_evt, INFINITE);
 		}
+		//std::this_thread::sleep_for(std::chrono::milliseconds(16));
+		auto end_frame = high_resolution_clock::now();
+		auto frame_dur = duration_cast<milliseconds>(end_frame - start_frame);
+		//std::cout << "Frame took " << frame_dur.count() << "ms\n";
 
 		// Update the back buffer index to the new back buffer now that the
 		// swap chain has swapped.
