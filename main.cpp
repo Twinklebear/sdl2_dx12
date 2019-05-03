@@ -215,7 +215,7 @@ int main(int argc, const char **argv) {
 	CHECK_ERR(cmd_list->Close());
 
 	// Create the VBO containing the triangle data
-	ComPtr<ID3D12Resource> vbo;
+	ComPtr<ID3D12Resource> vbo, upload;
 	D3D12_VERTEX_BUFFER_VIEW vbo_view;
 	{
 		const std::array<float, 24> vertex_data = {
@@ -236,10 +236,10 @@ int main(int argc, const char **argv) {
 		// this would be a two step process: Make a default heap and and upload heap,
 		// copy data from CPU to the upload heap, then from the upload heap into the
 		// default heap (which is memory resident on the GPU)
-		D3D12_HEAP_PROPERTIES upload_props = {0};
-		upload_props.Type = D3D12_HEAP_TYPE_UPLOAD;
-		upload_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-		upload_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+		D3D12_HEAP_PROPERTIES props = {0};
+		props.Type = D3D12_HEAP_TYPE_UPLOAD;
+		props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+		props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
 
 		D3D12_RESOURCE_DESC res_desc = {0};
 		res_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -253,21 +253,29 @@ int main(int argc, const char **argv) {
 		res_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		res_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-		CHECK_ERR(device->CreateCommittedResource(&upload_props, D3D12_HEAP_FLAG_NONE,
-					&res_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vbo)));
+		// Place the vertex data in an upload heap first, then do a GPU-side copy
+		// into a default heap (resident in VRAM)
+		CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+					&res_desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+					nullptr, IID_PPV_ARGS(&upload)));
 
 		// Now copy the data into the upload heap
 		uint8_t *mapping = nullptr;
 		D3D12_RANGE read_range = {0};
-		CHECK_ERR(vbo->Map(0, &read_range, reinterpret_cast<void**>(&mapping)));
+		CHECK_ERR(upload->Map(0, &read_range, reinterpret_cast<void**>(&mapping)));
 		std::memcpy(mapping, vertex_data.data(), sizeof(float) * vertex_data.size());
-		vbo->Unmap(0, nullptr);
+		upload->Unmap(0, nullptr);
+
+		// Now setup the GPU-side heap to hold the verts for rendering
+		props.Type = D3D12_HEAP_TYPE_DEFAULT;
+		CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+					&res_desc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+					nullptr, IID_PPV_ARGS(&vbo)));
 
 		// Setup the vertex buffer view
 		vbo_view.BufferLocation = vbo->GetGPUVirtualAddress();
 		vbo_view.StrideInBytes = sizeof(float) * 8;
 		vbo_view.SizeInBytes = sizeof(float) * vertex_data.size();
-
 	}
 
 	// Create the fence
@@ -301,6 +309,7 @@ int main(int argc, const char **argv) {
 	viewport.MinDepth = D3D12_MIN_DEPTH;
 	viewport.MaxDepth = D3D12_MAX_DEPTH;
 
+	int frame_id = 0;
 	int back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
 	bool done = false;
 	while (!done) {
@@ -353,6 +362,29 @@ int main(int argc, const char **argv) {
 		cmd_list->SetGraphicsRootSignature(root_signature.Get());
 		cmd_list->RSSetViewports(1, &viewport);
 		cmd_list->RSSetScissorRects(1, &screen_bounds);
+
+		// On frame 0 we need to do the GPU-side copy of our vertex data over
+		if (frame_id == 0) {
+			// Transition vbo buffer to a copy dest buffer
+			D3D12_RESOURCE_BARRIER res_barrier;
+			res_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			res_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			res_barrier.Transition.pResource = vbo.Get();
+			res_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+			res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+
+			cmd_list->ResourceBarrier(1, &res_barrier);
+
+			// Now enqueue the copy
+			cmd_list->CopyResource(vbo.Get(), upload.Get());
+
+			// Transition the vbo back to vertex and constant buffer state
+			res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+			res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+
+			cmd_list->ResourceBarrier(1, &res_barrier);
+		}
 
 		// Back buffer will be used as render target
 		{
@@ -407,6 +439,11 @@ int main(int argc, const char **argv) {
 		// Update the back buffer index to the new back buffer now that the
 		// swap chain has swapped.
 		back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
+
+		if (frame_id == 0) {
+			upload = nullptr;
+		}
+		++frame_id;
 	}
 
 	CloseHandle(fence_evt);
