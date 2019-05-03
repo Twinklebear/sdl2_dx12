@@ -65,7 +65,7 @@ int main(int argc, const char **argv) {
 	CHECK_ERR(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&cmd_queue)));
 
 	// Describe and create the swap chain.
-	DXGI_SWAP_CHAIN_DESC1 swap_chain_desc = {};
+	DXGI_SWAP_CHAIN_DESC1 swap_chain_desc = {0};
 	swap_chain_desc.BufferCount = 2;
 	swap_chain_desc.Width = win_width;
 	swap_chain_desc.Height = win_height;
@@ -304,8 +304,6 @@ int main(int argc, const char **argv) {
 	int back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
 	bool done = false;
 	while (!done) {
-		using namespace std::chrono;
-		auto start_frame = high_resolution_clock::now();
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			if (event.type == SDL_QUIT) {
@@ -322,7 +320,23 @@ int main(int argc, const char **argv) {
 				win_width = event.window.data1;
 				win_height = event.window.data2;
 
-				swap_chain->ResizeBuffers(2, win_width, win_height, DXGI_FORMAT_UNKNOWN, 0);
+				for (auto &rt : render_targets) {
+					rt = nullptr;
+				}
+
+				DXGI_SWAP_CHAIN_DESC desc = {0};
+				swap_chain->GetDesc(&desc);
+				swap_chain->ResizeBuffers(2, win_width, win_height,
+						desc.BufferDesc.Format, desc.Flags);
+				back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
+
+				// Update the render target handles
+				D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = rtv_heap->GetCPUDescriptorHandleForHeapStart();
+				for (int i = 0; i < 2; ++i) {
+					CHECK_ERR(swap_chain->GetBuffer(i, IID_PPV_ARGS(&render_targets[i])));
+					device->CreateRenderTargetView(render_targets[i].Get(), nullptr, rtv_handle);
+					rtv_handle.ptr += rtv_descriptor_size;
+				}
 
 				screen_bounds.right = win_width;
 				screen_bounds.bottom = win_height;
@@ -389,10 +403,6 @@ int main(int argc, const char **argv) {
 			CHECK_ERR(fence->SetEventOnCompletion(signal_val, fence_evt));
 			WaitForSingleObject(fence_evt, INFINITE);
 		}
-		//std::this_thread::sleep_for(std::chrono::milliseconds(16));
-		auto end_frame = high_resolution_clock::now();
-		auto frame_dur = duration_cast<milliseconds>(end_frame - start_frame);
-		//std::cout << "Frame took " << frame_dur.count() << "ms\n";
 
 		// Update the back buffer index to the new back buffer now that the
 		// swap chain has swapped.
