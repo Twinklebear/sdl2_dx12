@@ -9,12 +9,14 @@
 #include <D3Dcompiler.h>
 #include <combaseapi.h>
 #include <wrl.h>
+#include <Winerror.h>
 
 #define CHECK_ERR(FN) \
 	{ \
 		auto res = FN; \
 		if (FAILED(res)) { \
-			std::cout << #FN << " failed\n"; \
+			std::cout << #FN << " failed due to " \
+				<< std::hex << res << std::endl << std::flush; \
 			throw std::runtime_error(#FN); \
 		}\
 	}\
@@ -23,6 +25,8 @@ using Microsoft::WRL::ComPtr;
 
 int win_width = 640;
 int win_height = 480;
+
+const char* d3d_err_str(HRESULT res);
 
 int main(int argc, const char **argv) {
 	if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
@@ -108,7 +112,6 @@ int main(int argc, const char **argv) {
 	ComPtr<ID3D12GraphicsCommandList> cmd_list;
 	CHECK_ERR(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_allocator.Get(),
 				nullptr, IID_PPV_ARGS(&cmd_list)));
-	// Close it?? TODO Will: what's this meaning?
 	CHECK_ERR(cmd_list->Close());
 
 	// Create the fence
@@ -121,6 +124,179 @@ int main(int argc, const char **argv) {
 		std::cout << "Failed to make fence event\n";
 		throw std::runtime_error("Failed to make fence event");
 	}
+
+	// Load assets
+
+	// Make an empty root signature
+	ComPtr<ID3D12RootSignature> root_signature;	
+	{
+		D3D12_ROOT_SIGNATURE_DESC desc = {0};
+		desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+		ComPtr<ID3DBlob> signature;
+		ComPtr<ID3DBlob> error;
+		CHECK_ERR(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error));
+		CHECK_ERR(device->CreateRootSignature(0, signature->GetBufferPointer(),
+					signature->GetBufferSize(), IID_PPV_ARGS(&root_signature)));
+	}
+
+	// Setup the pipeline state and the shaders which will be used for it
+	ComPtr<ID3D12PipelineState> pipeline_state;
+	{
+		ComPtr<ID3DBlob> compiler_errors;
+		ComPtr<ID3DBlob> vertex_shader;
+		ComPtr<ID3DBlob> pixel_shader;
+		const uint32_t compile_flags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+		if (FAILED(D3DCompileFromFile(L"res/shader.hlsl", nullptr, nullptr,
+				"VSMain", "vs_5_0", compile_flags, 0, &vertex_shader, &compiler_errors)))
+		{
+			std::cout << "Failed to compile vertex shader, err msg: "
+				<< reinterpret_cast<char*>(compiler_errors->GetBufferPointer())
+				<< std::endl << std::flush;
+			throw std::runtime_error("VS did not compile");
+		}
+		if (FAILED(D3DCompileFromFile(L"res/shader.hlsl", nullptr, nullptr,
+				"PSMain", "ps_5_0", compile_flags, 0, &pixel_shader, &compiler_errors)))
+		{
+			std::cout << "Failed to compile pixel shader, err msg: "
+				<< reinterpret_cast<char*>(compiler_errors->GetBufferPointer())
+				<< std::endl << std::flush;
+			throw std::runtime_error("PS did not compile");
+		}
+
+		// Specify the vertex data layout
+		std::array<D3D12_INPUT_ELEMENT_DESC, 2> vertex_layout = {
+			D3D12_INPUT_ELEMENT_DESC{"POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0,
+				D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+			D3D12_INPUT_ELEMENT_DESC{"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16,
+				D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}
+		};
+
+		// Create the graphic pipeline state description
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {0};
+		desc.pRootSignature = root_signature.Get();
+
+		desc.VS.pShaderBytecode = vertex_shader->GetBufferPointer();
+		desc.VS.BytecodeLength = vertex_shader->GetBufferSize();
+		desc.PS.pShaderBytecode = pixel_shader->GetBufferPointer();
+		desc.PS.BytecodeLength = pixel_shader->GetBufferSize();
+
+		desc.BlendState.AlphaToCoverageEnable = FALSE;
+		desc.BlendState.IndependentBlendEnable = FALSE;
+		{
+			const D3D12_RENDER_TARGET_BLEND_DESC rt_blend_desc = {
+				false, false,
+				D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+				D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+				D3D12_LOGIC_OP_NOOP,
+				D3D12_COLOR_WRITE_ENABLE_ALL,
+			};
+			for (int i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
+				desc.BlendState.RenderTarget[i] = rt_blend_desc;
+			}
+		}
+
+		desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+		desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+		desc.RasterizerState.FrontCounterClockwise = FALSE;
+		desc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+		desc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+		desc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+		desc.RasterizerState.DepthClipEnable = TRUE;
+		desc.RasterizerState.MultisampleEnable = FALSE;
+		desc.RasterizerState.AntialiasedLineEnable = FALSE;
+		desc.RasterizerState.ForcedSampleCount = 0;
+		desc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+		desc.SampleMask = UINT_MAX;
+		desc.DepthStencilState.DepthEnable = false;
+		desc.DepthStencilState.StencilEnable = false;
+
+		desc.InputLayout.pInputElementDescs = vertex_layout.data();
+		desc.InputLayout.NumElements = vertex_layout.size();
+		desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+		desc.NumRenderTargets = 1;
+		desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+		desc.SampleDesc.Count = 1;
+
+		CHECK_ERR(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline_state)));
+	}
+
+	// Create the VBO containing the triangle data
+	ComPtr<ID3D12Resource> vbo;
+	D3D12_VERTEX_BUFFER_VIEW vbo_view;
+	{
+		const std::array<float, 24> vertex_data = {
+			0, 0.5, 0, 1,
+			1, 0, 0, 1,
+
+			0.5, -0.5, 0, 1,
+			0, 1, 0, 1,
+
+			-0.5, -0.5, 0, 1,
+			0, 0, 1, 1
+		};
+
+		// TODO: The example mentions that using the upload heap to transfer data
+		// like this is not recommended b/c it will need to recopy it each time the GPU
+		// needs it. Look into default heap usage in the future. Should be some way
+		// to upload into the GPU memory so it is fixed there in VRAM. Based on the doc
+		// this would be a two step process: Make a default heap and and upload heap,
+		// copy data from CPU to the upload heap, then from the upload heap into the
+		// default heap (which is memory resident on the GPU)
+		D3D12_HEAP_PROPERTIES upload_props = {0};
+		upload_props.Type = D3D12_HEAP_TYPE_UPLOAD;
+		upload_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+		upload_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+		D3D12_RESOURCE_DESC res_desc = {0};
+		res_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		res_desc.Width = sizeof(float) * vertex_data.size();
+		res_desc.Height = 1;
+		res_desc.DepthOrArraySize = 1;
+		res_desc.MipLevels = 1;
+		res_desc.Format = DXGI_FORMAT_UNKNOWN;
+		res_desc.SampleDesc.Count = 1;
+		res_desc.SampleDesc.Quality = 0;
+		res_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		res_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+		CHECK_ERR(device->CreateCommittedResource(&upload_props, D3D12_HEAP_FLAG_NONE,
+					&res_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vbo)));
+
+		// Now copy the data into the upload heap
+		uint8_t *mapping = nullptr;
+		D3D12_RANGE read_range = {0};
+		CHECK_ERR(vbo->Map(0, &read_range, reinterpret_cast<void**>(&mapping)));
+		std::memcpy(mapping, vertex_data.data(), sizeof(float) * vertex_data.size());
+		vbo->Unmap(0, nullptr);
+
+		// Setup the vertex buffer view
+		vbo_view.BufferLocation = vbo->GetGPUVirtualAddress();
+		vbo_view.StrideInBytes = sizeof(float) * 4;
+		vbo_view.SizeInBytes = sizeof(float) * vertex_data.size();
+
+		// Sync with the fence to wait for the assets to upload
+		const uint32_t signal_val = fence_value;
+		CHECK_ERR(cmd_queue->Signal(fence.Get(), signal_val));
+		++fence_value;
+
+		if (fence->GetCompletedValue() < signal_val) {
+			CHECK_ERR(fence->SetEventOnCompletion(signal_val, fence_evt));
+			WaitForSingleObject(fence_evt, INFINITE);
+		}
+	}
+
+	D3D12_RECT screen_bounds = {0};
+	screen_bounds.right = win_width;
+	screen_bounds.bottom = win_height;
+
+	D3D12_VIEWPORT viewport = {0};
+	viewport.Width = screen_bounds.right;
+	viewport.Height = screen_bounds.bottom;
+	viewport.MinDepth = D3D12_MIN_DEPTH;
+	viewport.MaxDepth = D3D12_MAX_DEPTH;
 
 	int back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
 	bool done = false;
@@ -140,7 +316,11 @@ int main(int argc, const char **argv) {
 			if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
 				win_width = event.window.data1;
 				win_height = event.window.data2;
-				// TODO Resizing support
+				screen_bounds.right = win_width;
+				screen_bounds.bottom = win_height;
+				viewport.Width = screen_bounds.right;
+				viewport.Height = screen_bounds.bottom;
+				// It seems like resizing just works ok here?
 			}
 		}
 
@@ -149,6 +329,10 @@ int main(int argc, const char **argv) {
 
 		ComPtr<ID3D12PipelineState> pipeline_state;
 		CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), pipeline_state.Get()));
+
+		cmd_list->SetGraphicsRootSignature(root_signature.Get());
+		cmd_list->RSSetViewports(1, &viewport);
+		cmd_list->RSSetScissorRects(1, &screen_bounds);
 
 		// Back buffer will be used as render target
 		{
@@ -164,9 +348,13 @@ int main(int argc, const char **argv) {
 
 		D3D12_CPU_DESCRIPTOR_HANDLE render_target = rtv_heap->GetCPUDescriptorHandleForHeapStart();
 		render_target.ptr += rtv_descriptor_size * back_buffer_idx;
+		cmd_list->OMSetRenderTargets(1, &render_target, false, nullptr);
 
 		const std::array<float, 4> clear_color = {0.f, 0.f, 1.f, 1.f};
 		cmd_list->ClearRenderTargetView(render_target, clear_color.data(), 0, nullptr);
+		cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		cmd_list->IASetVertexBuffers(0, 1, &vbo_view);
+		cmd_list->DrawInstanced(3, 1, 0, 0);
 
 		// Back buffer will now be used to present
 		{
@@ -202,6 +390,7 @@ int main(int argc, const char **argv) {
 		back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
 	}
 
+	CloseHandle(fence_evt);
 	SDL_DestroyWindow(window);
 	SDL_Quit();
 

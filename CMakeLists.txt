@@ -9,6 +9,8 @@ find_package(Threads REQUIRED)
 find_package(SDL2 REQUIRED)
 find_package(D3D12 REQUIRED)
 
+add_subdirectory(res)
+
 add_executable(sdl2_dx12 main.cpp)
 
 set_target_properties(sdl2_dx12 PROPERTIES
@@ -22,4 +24,5 @@ target_include_directories(sdl2_dx12 PUBLIC
 target_link_libraries(sdl2_dx12 PUBLIC
 	${SDL2_LIBRARY} ${D3D12_LIBRARIES})
 
+install(TARGETS sdl2_dx12 DESTINATION bin)
 
