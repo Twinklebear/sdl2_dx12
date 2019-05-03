@@ -25,8 +25,8 @@
 
 using Microsoft::WRL::ComPtr;
 
-int win_width = 640;
-int win_height = 480;
+int win_width = 1280;
+int win_height = 720;
 
 const char* d3d_err_str(HRESULT res);
 
