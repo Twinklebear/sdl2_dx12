@@ -102,7 +102,23 @@ int main(int argc, const char **argv) {
 	ComPtr<ID3D12CommandAllocator> cmd_allocator;
 	CHECK_ERR(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmd_allocator)));
 
-	// TODO: make the command list and fence
+	// Make the command list
+	ComPtr<ID3D12GraphicsCommandList> cmd_list;
+	CHECK_ERR(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_allocator.Get(),
+				nullptr, IID_PPV_ARGS(&cmd_list)));
+	// Close it?? TODO Will: what's this meaning?
+	CHECK_ERR(cmd_list->Close());
+
+	// Create the fence
+	ComPtr<ID3D12Fence> fence;
+	device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+	int fence_value = 1;
+
+	HANDLE fence_evt = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+	if (fence_evt == nullptr) {
+		std::cout << "Failed to make fence event\n";
+		throw std::runtime_error("Failed to make fence event");
+	}
 
 	// TODO: build the command list to clear the frame color
 
