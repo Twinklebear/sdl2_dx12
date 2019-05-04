@@ -236,12 +236,12 @@ int main(int argc, const char **argv) {
 		// this would be a two step process: Make a default heap and and upload heap,
 		// copy data from CPU to the upload heap, then from the upload heap into the
 		// default heap (which is memory resident on the GPU)
-		D3D12_HEAP_PROPERTIES props = {0};
+		D3D12_HEAP_PROPERTIES props = {};
 		props.Type = D3D12_HEAP_TYPE_UPLOAD;
 		props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
 		props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
 
-		D3D12_RESOURCE_DESC res_desc = {0};
+		D3D12_RESOURCE_DESC res_desc = {};
 		res_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 		res_desc.Width = sizeof(float) * vertex_data.size();
 		res_desc.Height = 1;
