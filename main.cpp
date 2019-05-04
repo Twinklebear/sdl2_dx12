@@ -56,6 +56,17 @@ int main(int argc, const char **argv) {
 	ComPtr<ID3D12Device> device;
 	CHECK_ERR(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device)));
 
+	{
+		D3D12_FEATURE_DATA_D3D12_OPTIONS5 feature_data = {0};
+		CHECK_ERR(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &feature_data, sizeof(feature_data)));
+		if (feature_data.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0) {
+			std::cout << "DXR is available\n";
+		} else {
+			std::cout << "DXR is missing, exiting\n";
+			return 1;
+		}
+	}
+
 	// Describe and create the command queue.
 	D3D12_COMMAND_QUEUE_DESC queue_desc = {};
 	queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
@@ -404,9 +415,14 @@ int main(int argc, const char **argv) {
 
 		const std::array<float, 4> clear_color = {0.f, 0.2f, 0.4f, 1.f};
 		cmd_list->ClearRenderTargetView(render_target, clear_color.data(), 0, nullptr);
+#if 1
+		// Rasterize the triangle
 		cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		cmd_list->IASetVertexBuffers(0, 1, &vbo_view);
 		cmd_list->DrawInstanced(3, 1, 0, 0);
+#else
+		// TODO: Ray trace it
+#endif
 
 		// Back buffer will now be used to present
 		{
