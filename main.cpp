@@ -53,7 +53,7 @@ int main(int argc, const char **argv) {
 	ComPtr<IDXGIFactory2> factory;
 	CHECK_ERR(CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, IID_PPV_ARGS(&factory)));
 
-	ComPtr<ID3D12Device> device;
+	ComPtr<ID3D12Device5> device;
 	CHECK_ERR(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device)));
 
 	{
@@ -68,7 +68,7 @@ int main(int argc, const char **argv) {
 	}
 
 	// Describe and create the command queue.
-	D3D12_COMMAND_QUEUE_DESC queue_desc = {};
+	D3D12_COMMAND_QUEUE_DESC queue_desc = {0};
 	queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 	queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
@@ -96,7 +96,7 @@ int main(int argc, const char **argv) {
 
 	// Make a descriptor heap
 	ComPtr<ID3D12DescriptorHeap> rtv_heap;
-	D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc = {};
+	D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc = {0};
 	rtv_heap_desc.NumDescriptors = 2;
 	rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 	rtv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
@@ -220,13 +220,13 @@ int main(int argc, const char **argv) {
 	}
 
 	// Make the command list
-	ComPtr<ID3D12GraphicsCommandList> cmd_list;
+	ComPtr<ID3D12GraphicsCommandList4> cmd_list;
 	CHECK_ERR(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_allocator.Get(),
 				pipeline_state.Get(), IID_PPV_ARGS(&cmd_list)));
 	CHECK_ERR(cmd_list->Close());
 
 	// Create the VBO containing the triangle data
-	ComPtr<ID3D12Resource> vbo, upload;
+	ComPtr<ID3D12Resource> vbo, upload, bottom_level_as, top_level_as;
 	D3D12_VERTEX_BUFFER_VIEW vbo_view;
 	{
 		const std::array<float, 24> vertex_data = {
@@ -304,6 +304,82 @@ int main(int argc, const char **argv) {
 		res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
 
 		cmd_list->ResourceBarrier(1, &res_barrier);
+
+		// Now build the bottom level acceleration structure on the triangle
+		D3D12_RAYTRACING_GEOMETRY_DESC rt_geom_desc = {0};
+		rt_geom_desc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+		rt_geom_desc.Triangles.VertexBuffer.StartAddress = vbo->GetGPUVirtualAddress();
+		rt_geom_desc.Triangles.VertexBuffer.StrideInBytes = sizeof(float) * 8;
+		rt_geom_desc.Triangles.VertexCount = 3;
+		rt_geom_desc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+		// No index buffer for now
+		rt_geom_desc.Triangles.IndexBuffer = 0;
+		rt_geom_desc.Triangles.IndexFormat = DXGI_FORMAT_UNKNOWN;
+		rt_geom_desc.Triangles.IndexCount = 0;
+		rt_geom_desc.Triangles.Transform3x4 = 0;
+		rt_geom_desc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+
+		// Determine bound of much memory the accel builder may need and allocate it
+		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS as_inputs = {0};
+		as_inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+		as_inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+		as_inputs.NumDescs = 1;
+		as_inputs.pGeometryDescs = &rt_geom_desc;
+		as_inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+
+		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuild_info = {0};
+		device->GetRaytracingAccelerationStructurePrebuildInfo(&as_inputs, &prebuild_info);
+
+		// The buffer sizes must be aligned to 256 bytes
+		prebuild_info.ResultDataMaxSizeInBytes +=
+			prebuild_info.ResultDataMaxSizeInBytes % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
+		// TODO: Not sure the scratch needs this alignment
+		prebuild_info.ScratchDataSizeInBytes +=
+			prebuild_info.ScratchDataSizeInBytes % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
+
+		std::cout << "Result AS will use at most " << prebuild_info.ResultDataMaxSizeInBytes
+			<< " bytes, and scratch of " << prebuild_info.ScratchDataSizeInBytes << " bytes\n";
+
+		// Allocate the buffer for the final bottom level AS
+		res_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		res_desc.Alignment = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
+		res_desc.Width = prebuild_info.ResultDataMaxSizeInBytes;
+		res_desc.Height = 1;
+		res_desc.DepthOrArraySize = 1;
+		res_desc.MipLevels = 1;
+		res_desc.Format = DXGI_FORMAT_UNKNOWN;
+		res_desc.SampleDesc.Count = 1;
+		res_desc.SampleDesc.Quality = 0;
+		res_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		res_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+		CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+			&res_desc, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+			nullptr, IID_PPV_ARGS(&bottom_level_as)));
+
+		{
+			// Allocate the scratch space
+			ComPtr<ID3D12Resource> build_scratch;
+			res_desc.Width = prebuild_info.ScratchDataSizeInBytes;
+			CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+				&res_desc, D3D12_RESOURCE_STATE_COMMON,
+				nullptr, IID_PPV_ARGS(&build_scratch)));
+
+			// Now build the bottom level acceleration structure
+			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build_desc;
+			build_desc.Inputs = as_inputs;
+			build_desc.DestAccelerationStructureData = bottom_level_as->GetGPUVirtualAddress();
+			build_desc.ScratchAccelerationStructureData = build_scratch->GetGPUVirtualAddress();
+			cmd_list->BuildRaytracingAccelerationStructure(&build_desc, 0, NULL);
+
+			// Insert a barrier to wait for the bottom level AS to complete before the top level
+			// build is started
+			D3D12_RESOURCE_BARRIER build_barrier;
+			build_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+			build_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			build_barrier.UAV.pResource = bottom_level_as.Get();
+			cmd_list->ResourceBarrier(1, &build_barrier);
+		}
 
 		CHECK_ERR(cmd_list->Close());
 
