@@ -283,6 +283,34 @@ int main(int argc, const char **argv) {
 					&res_desc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
 					nullptr, IID_PPV_ARGS(&vbo)));
 
+		CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), pipeline_state.Get()));
+
+		// Transition vbo buffer to a copy dest buffer
+		D3D12_RESOURCE_BARRIER res_barrier;
+		res_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		res_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		res_barrier.Transition.pResource = vbo.Get();
+		res_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+		res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+
+		cmd_list->ResourceBarrier(1, &res_barrier);
+
+		// Now enqueue the copy
+		cmd_list->CopyResource(vbo.Get(), upload.Get());
+
+		// Transition the vbo back to vertex and constant buffer state
+		res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+
+		cmd_list->ResourceBarrier(1, &res_barrier);
+
+		CHECK_ERR(cmd_list->Close());
+
+		// Execute the command list to do the copy
+		std::array<ID3D12CommandList*, 1> cmd_lists = {cmd_list.Get()};
+		cmd_queue->ExecuteCommandLists(cmd_lists.size(), cmd_lists.data());
+
 		// Setup the vertex buffer view
 		vbo_view.BufferLocation = vbo->GetGPUVirtualAddress();
 		vbo_view.StrideInBytes = sizeof(float) * 8;
@@ -308,6 +336,9 @@ int main(int argc, const char **argv) {
 			CHECK_ERR(fence->SetEventOnCompletion(signal_val, fence_evt));
 			WaitForSingleObject(fence_evt, INFINITE);
 		}
+
+		// We know the gpu-side data copy is done now, so release the upload buffer
+		upload = nullptr;
 	}
 
 	D3D12_RECT screen_bounds = {0};
@@ -320,7 +351,6 @@ int main(int argc, const char **argv) {
 	viewport.MinDepth = D3D12_MIN_DEPTH;
 	viewport.MaxDepth = D3D12_MAX_DEPTH;
 
-	int frame_id = 0;
 	int back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
 	bool done = false;
 	while (!done) {
@@ -373,29 +403,6 @@ int main(int argc, const char **argv) {
 		cmd_list->SetGraphicsRootSignature(root_signature.Get());
 		cmd_list->RSSetViewports(1, &viewport);
 		cmd_list->RSSetScissorRects(1, &screen_bounds);
-
-		// On frame 0 we need to do the GPU-side copy of our vertex data over
-		if (frame_id == 0) {
-			// Transition vbo buffer to a copy dest buffer
-			D3D12_RESOURCE_BARRIER res_barrier;
-			res_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			res_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-			res_barrier.Transition.pResource = vbo.Get();
-			res_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-			res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-
-			cmd_list->ResourceBarrier(1, &res_barrier);
-
-			// Now enqueue the copy
-			cmd_list->CopyResource(vbo.Get(), upload.Get());
-
-			// Transition the vbo back to vertex and constant buffer state
-			res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-			res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-
-			cmd_list->ResourceBarrier(1, &res_barrier);
-		}
 
 		// Back buffer will be used as render target
 		{
@@ -455,11 +462,6 @@ int main(int argc, const char **argv) {
 		// Update the back buffer index to the new back buffer now that the
 		// swap chain has swapped.
 		back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
-
-		if (frame_id == 0) {
-			upload = nullptr;
-		}
-		++frame_id;
 	}
 
 	CloseHandle(fence_evt);
