@@ -227,8 +227,8 @@ int main(int argc, const char **argv) {
 
 	// Create the VBO containing the triangle data
 	ComPtr<ID3D12Resource> vbo, upload;
-	ComPtr<ID3D12Resource> bottom_level_as, bottom_scratch, top_level_as, top_scratch;
-
+	ComPtr<ID3D12Resource> bottom_level_as, bottom_scratch;
+	ComPtr<ID3D12Resource> top_level_as, top_scratch, instances;
 	D3D12_VERTEX_BUFFER_VIEW vbo_view;
 	{
 		const std::array<float, 24> vertex_data = {
@@ -274,8 +274,7 @@ int main(int argc, const char **argv) {
 
 		// Now copy the data into the upload heap
 		uint8_t *mapping = nullptr;
-		D3D12_RANGE read_range = {0};
-		CHECK_ERR(upload->Map(0, &read_range, reinterpret_cast<void**>(&mapping)));
+		CHECK_ERR(upload->Map(0, NULL, reinterpret_cast<void**>(&mapping)));
 		std::memcpy(mapping, vertex_data.data(), sizeof(float) * vertex_data.size());
 		upload->Unmap(0, nullptr);
 
@@ -360,14 +359,14 @@ int main(int argc, const char **argv) {
 			&res_desc, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
 			nullptr, IID_PPV_ARGS(&bottom_level_as)));
 
-		// Allocate the scratch space
-		{
-			res_desc.Width = prebuild_info.ScratchDataSizeInBytes;
-			CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
-				&res_desc, D3D12_RESOURCE_STATE_COMMON,
-				nullptr, IID_PPV_ARGS(&bottom_scratch)));
+		// Allocate the scratch space for the bottom level build
+		res_desc.Width = prebuild_info.ScratchDataSizeInBytes;
+		CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+			&res_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			nullptr, IID_PPV_ARGS(&bottom_scratch)));
 
-			// Now build the bottom level acceleration structure
+		// Now build the bottom level acceleration structure
+		{
 			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build_desc = {0};
 			build_desc.Inputs = as_inputs;
 			build_desc.DestAccelerationStructureData = bottom_level_as->GetGPUVirtualAddress();
@@ -405,6 +404,67 @@ int main(int argc, const char **argv) {
 		std::cout << "Top level AS will use at most " << prebuild_info.ResultDataMaxSizeInBytes
 			<< " bytes, and scratch of " << prebuild_info.ScratchDataSizeInBytes << " bytes\n";
 
+		res_desc.Width = prebuild_info.ResultDataMaxSizeInBytes;
+		CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+			&res_desc, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+			nullptr, IID_PPV_ARGS(&top_level_as)));
+
+		res_desc.Width = prebuild_info.ScratchDataSizeInBytes;
+		CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+			&res_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			nullptr, IID_PPV_ARGS(&top_scratch)));
+
+		// Allocate space for the instances as well
+		res_desc.Width = sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+		// Align it as well to the constant buffer size
+		res_desc.Width += res_desc.Width % D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT;
+		// We want to write from the CPU to this buffer so place in the upload heap
+		props.Type = D3D12_HEAP_TYPE_UPLOAD;
+		res_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+		CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+			&res_desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+			nullptr, IID_PPV_ARGS(&instances)));
+
+		// Fill out the instance information
+		{
+			D3D12_RAYTRACING_INSTANCE_DESC *buf;
+			instances->Map(0, nullptr, reinterpret_cast<void**>(&buf));
+
+			buf->InstanceID = 0;
+			// TODO: does this mean you can do per-instance hit shaders?
+			buf->InstanceContributionToHitGroupIndex = 0;
+			buf->Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+			buf->AccelerationStructure = bottom_level_as->GetGPUVirtualAddress();
+			buf->InstanceMask = 0xff;
+
+			// WILL Note: these matrices (and D3D generally?) are row major
+			// this is identity now so we don't really car
+			std::memset(buf->Transform, 0, sizeof(buf->Transform));
+			buf->Transform[0][0] = 1.f;
+			buf->Transform[1][1] = 1.f;
+			buf->Transform[2][2] = 1.f;
+			
+			instances->Unmap(0, nullptr);
+		}
+
+		// Now build the top level acceleration structure
+		{
+			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build_desc = {0};
+			as_inputs.InstanceDescs = instances->GetGPUVirtualAddress();
+			build_desc.Inputs = as_inputs;
+			build_desc.DestAccelerationStructureData = top_level_as->GetGPUVirtualAddress();
+			build_desc.ScratchAccelerationStructureData = top_scratch->GetGPUVirtualAddress();
+			cmd_list->BuildRaytracingAccelerationStructure(&build_desc, 0, NULL);
+
+			// Insert a barrier to wait for the bottom level AS to complete before the top level
+			// build is started
+			D3D12_RESOURCE_BARRIER build_barrier = {0};
+			build_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+			build_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			build_barrier.UAV.pResource = top_level_as.Get();
+			cmd_list->ResourceBarrier(1, &build_barrier);
+		}
+
 		CHECK_ERR(cmd_list->Close());
 
 		// Execute the command list to do the copy
@@ -427,6 +487,7 @@ int main(int argc, const char **argv) {
 		std::cout << "Failed to make fence event\n";
 		throw std::runtime_error("Failed to make fence event");
 	}
+
 	{
 		// Sync with the fence to wait for the assets to upload
 		const uint32_t signal_val = fence_value++;
@@ -438,7 +499,10 @@ int main(int argc, const char **argv) {
 		}
 
 		// We know the gpu-side data copy is done now, so release the upload buffer
+		// and the AS scratch buffers
 		upload = nullptr;
+		bottom_scratch = nullptr;
+		top_scratch = nullptr;
 	}
 
 	D3D12_RECT screen_bounds = {0};
