@@ -43,8 +43,9 @@ int main(int argc, const char **argv) {
 	}
 
 	SDL_Window* window = SDL_CreateWindow("SDL2 + DX12",
-			SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_width, win_height,
-			SDL_WINDOW_RESIZABLE);
+		SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_width, win_height, 0);
+	// todo: resizing means we need to re-create the RT output buffer
+		//SDL_WINDOW_RESIZABLE);
 
 	SDL_SysWMinfo wm_info;
 	SDL_VERSION(&wm_info.version);
@@ -236,6 +237,9 @@ int main(int argc, const char **argv) {
 	ComPtr<ID3D12Resource> bottom_level_as, bottom_scratch;
 	ComPtr<ID3D12Resource> top_level_as, top_scratch, instances;
 	ComPtr<ID3D12StateObject> rt_state_object;
+	ComPtr<ID3D12Resource> rt_output_img;
+	ComPtr<ID3D12DescriptorHeap> rt_shader_res_heap;
+	
 	D3D12_VERTEX_BUFFER_VIEW vbo_view;
 	{
 		const std::array<float, 24> vertex_data = {
@@ -249,13 +253,6 @@ int main(int argc, const char **argv) {
 			0, 0, 1, 1
 		};
 
-		// TODO: The example mentions that using the upload heap to transfer data
-		// like this is not recommended b/c it will need to recopy it each time the GPU
-		// needs it. Look into default heap usage in the future. Should be some way
-		// to upload into the GPU memory so it is fixed there in VRAM. Based on the doc
-		// this would be a two step process: Make a default heap and and upload heap,
-		// copy data from CPU to the upload heap, then from the upload heap into the
-		// default heap (which is memory resident on the GPU)
 		D3D12_HEAP_PROPERTIES props = {0};
 		props.Type = D3D12_HEAP_TYPE_UPLOAD;
 		props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -314,6 +311,15 @@ int main(int argc, const char **argv) {
 			| D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
 		cmd_list->ResourceBarrier(1, &res_barrier);
+
+		// Setup the vertex buffer view
+		vbo_view.BufferLocation = vbo->GetGPUVirtualAddress();
+		vbo_view.StrideInBytes = sizeof(float) * 8;
+		vbo_view.SizeInBytes = sizeof(float) * vertex_data.size();
+
+		// ===============================
+		// Build the RT acceleration structures
+		// ===============================
 
 		// Now build the bottom level acceleration structure on the triangle
 		D3D12_RAYTRACING_GEOMETRY_DESC rt_geom_desc = {0};
@@ -470,7 +476,19 @@ int main(int argc, const char **argv) {
 			build_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
 			build_barrier.UAV.pResource = top_level_as.Get();
 			cmd_list->ResourceBarrier(1, &build_barrier);
+
+			// We won't need to run anything else on the command list until render time,
+			// so submit this work now
+			CHECK_ERR(cmd_list->Close());
+
+			// Execute the command list to do the copy
+			std::array<ID3D12CommandList*, 1> cmd_lists = { cmd_list.Get() };
+			cmd_queue->ExecuteCommandLists(cmd_lists.size(), cmd_lists.data());
 		}
+
+		// ===============================
+		// Build the RT pipeline
+		// ===============================
 
 		// Load the DXIL shader library
 		D3D12_SHADER_BYTECODE dxil_bytecode = { 0 };
@@ -687,19 +705,64 @@ int main(int argc, const char **argv) {
 		pipeline_desc.pSubobjects = subobjects.data();
 		
 		PrintStateObjectDesc(&pipeline_desc);
-		std::wcout << std::flush;
+
 		CHECK_ERR(device->CreateStateObject(&pipeline_desc, IID_PPV_ARGS(&rt_state_object)));
 
-		CHECK_ERR(cmd_list->Close());
+		// ===============================
+		// Create the output texture for the ray tracer
+		// ===============================
+		{
+			D3D12_HEAP_PROPERTIES props = { 0 };
+			props.Type = D3D12_HEAP_TYPE_DEFAULT;
+			props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+			props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
 
-		// Execute the command list to do the copy
-		std::array<ID3D12CommandList*, 1> cmd_lists = {cmd_list.Get()};
-		cmd_queue->ExecuteCommandLists(cmd_lists.size(), cmd_lists.data());
+			D3D12_RESOURCE_DESC res_desc = { 0 };
+			res_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+			res_desc.Width = win_width;
+			res_desc.Height = win_height;
+			res_desc.DepthOrArraySize = 1;
+			res_desc.MipLevels = 1;
+			res_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			res_desc.SampleDesc.Count = 1;
+			res_desc.SampleDesc.Quality = 0;
+			res_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+			res_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-		// Setup the vertex buffer view
-		vbo_view.BufferLocation = vbo->GetGPUVirtualAddress();
-		vbo_view.StrideInBytes = sizeof(float) * 8;
-		vbo_view.SizeInBytes = sizeof(float) * vertex_data.size();
+			CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+				&res_desc, D3D12_RESOURCE_STATE_COPY_SOURCE,
+				nullptr, IID_PPV_ARGS(&rt_output_img)));
+		}
+
+		// ===============================
+		// Create the shader resource heap
+		// the resource heap has the pointers/views things to our output image buffer
+		// and the top level acceleration structure
+		// ===============================
+		{
+			D3D12_DESCRIPTOR_HEAP_DESC heap_desc = { 0 };
+			heap_desc.NumDescriptors = 2;
+			heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+			heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+			CHECK_ERR(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&rt_shader_res_heap)));
+
+			// Write the descriptors into the heap
+			D3D12_CPU_DESCRIPTOR_HANDLE heap_handle = rt_shader_res_heap->GetCPUDescriptorHandleForHeapStart();
+
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = { 0 };
+			uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+			device->CreateUnorderedAccessView(rt_output_img.Get(), nullptr, &uav_desc, heap_handle);
+
+			// Write the TLAS after the output image in the heap
+			heap_handle.ptr += device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+			D3D12_SHADER_RESOURCE_VIEW_DESC tlas_desc = { 0 };
+			tlas_desc.Format = DXGI_FORMAT_UNKNOWN;
+			tlas_desc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+			tlas_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			tlas_desc.RaytracingAccelerationStructure.Location = top_level_as->GetGPUVirtualAddress();
+			device->CreateShaderResourceView(nullptr, &tlas_desc, heap_handle);
+		}
 	}
 
 	// Create the fence
