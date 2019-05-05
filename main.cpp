@@ -471,6 +471,46 @@ int main(int argc, const char **argv) {
 		dxil_bytecode.pShaderBytecode = rt_shader_dxil;
 		dxil_bytecode.BytecodeLength = sizeof(rt_shader_dxil);
 
+		// Setup the exports for the shader library
+		D3D12_DXIL_LIBRARY_DESC shader_lib = { 0 };
+		std::vector<D3D12_EXPORT_DESC> exports;
+		{
+			D3D12_EXPORT_DESC shader_export = { 0 };
+			shader_export.ExportToRename = nullptr;
+			shader_export.Flags = D3D12_EXPORT_FLAG_NONE;
+
+			shader_export.Name = L"RayGen";
+			exports.push_back(shader_export);
+
+			shader_export.Name = L"Miss";
+			exports.push_back(shader_export);
+			
+			shader_export.Name = L"ClosestHit";
+			exports.push_back(shader_export);
+		}
+		shader_lib.DXILLibrary = dxil_bytecode;
+		shader_lib.NumExports = exports.size();
+		shader_lib.pExports = exports.data();
+
+		// Build the hit group which uses our shader library
+		D3D12_HIT_GROUP_DESC hit_group = { 0 };
+		hit_group.HitGroupExport = L"MyHitGroup";
+		hit_group.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
+		hit_group.ClosestHitShaderImport = L"ClosestHit";
+
+		// Make the shader config which defines the maximum size in bytes for the ray
+		// payload and attribute structure
+		D3D12_RAYTRACING_SHADER_CONFIG shader_cfg;
+		// Payload will just be a float4 color + z
+		shader_cfg.MaxPayloadSizeInBytes = 4 * sizeof(float);
+		// Attribute size is just the float2 barycentrics
+		shader_cfg.MaxAttributeSizeInBytes = 2 * sizeof(float);
+
+		// Create the root signature for this shader library
+		// Note that the closest hit and miss shaders don't need one since they
+		// don't make use of a local root signature (no reads from buffers/textures)
+
+
 		CHECK_ERR(cmd_list->Close());
 
 		// Execute the command list to do the copy
