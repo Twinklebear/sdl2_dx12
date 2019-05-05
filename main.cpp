@@ -226,7 +226,9 @@ int main(int argc, const char **argv) {
 	CHECK_ERR(cmd_list->Close());
 
 	// Create the VBO containing the triangle data
-	ComPtr<ID3D12Resource> vbo, upload, bottom_level_as, top_level_as;
+	ComPtr<ID3D12Resource> vbo, upload;
+	ComPtr<ID3D12Resource> bottom_level_as, bottom_scratch, top_level_as, top_scratch;
+
 	D3D12_VERTEX_BUFFER_VIEW vbo_view;
 	{
 		const std::array<float, 24> vertex_data = {
@@ -301,7 +303,9 @@ int main(int argc, const char **argv) {
 
 		// Transition the vbo back to vertex and constant buffer state
 		res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-		res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+		res_barrier.Transition.StateAfter =
+			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER
+			| D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
 		cmd_list->ResourceBarrier(1, &res_barrier);
 
@@ -333,16 +337,15 @@ int main(int argc, const char **argv) {
 		// The buffer sizes must be aligned to 256 bytes
 		prebuild_info.ResultDataMaxSizeInBytes +=
 			prebuild_info.ResultDataMaxSizeInBytes % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
-		// TODO: Not sure the scratch needs this alignment
 		prebuild_info.ScratchDataSizeInBytes +=
 			prebuild_info.ScratchDataSizeInBytes % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
-
-		std::cout << "Result AS will use at most " << prebuild_info.ResultDataMaxSizeInBytes
+	
+		std::cout << "Bottom level AS will use at most " << prebuild_info.ResultDataMaxSizeInBytes
 			<< " bytes, and scratch of " << prebuild_info.ScratchDataSizeInBytes << " bytes\n";
 
 		// Allocate the buffer for the final bottom level AS
 		res_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		res_desc.Alignment = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
+		res_desc.Alignment = 0;
 		res_desc.Width = prebuild_info.ResultDataMaxSizeInBytes;
 		res_desc.Height = 1;
 		res_desc.DepthOrArraySize = 1;
@@ -357,29 +360,50 @@ int main(int argc, const char **argv) {
 			&res_desc, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
 			nullptr, IID_PPV_ARGS(&bottom_level_as)));
 
+		// Allocate the scratch space
 		{
-			// Allocate the scratch space
-			ComPtr<ID3D12Resource> build_scratch;
 			res_desc.Width = prebuild_info.ScratchDataSizeInBytes;
 			CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
 				&res_desc, D3D12_RESOURCE_STATE_COMMON,
-				nullptr, IID_PPV_ARGS(&build_scratch)));
+				nullptr, IID_PPV_ARGS(&bottom_scratch)));
 
 			// Now build the bottom level acceleration structure
-			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build_desc;
+			D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build_desc = {0};
 			build_desc.Inputs = as_inputs;
 			build_desc.DestAccelerationStructureData = bottom_level_as->GetGPUVirtualAddress();
-			build_desc.ScratchAccelerationStructureData = build_scratch->GetGPUVirtualAddress();
+			build_desc.ScratchAccelerationStructureData = bottom_scratch->GetGPUVirtualAddress();
 			cmd_list->BuildRaytracingAccelerationStructure(&build_desc, 0, NULL);
 
 			// Insert a barrier to wait for the bottom level AS to complete before the top level
 			// build is started
-			D3D12_RESOURCE_BARRIER build_barrier;
+			D3D12_RESOURCE_BARRIER build_barrier = {0};
 			build_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
 			build_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
 			build_barrier.UAV.pResource = bottom_level_as.Get();
 			cmd_list->ResourceBarrier(1, &build_barrier);
 		}
+
+		// Now build the top-level accel. structure over our one instantiation of the bottom level AS
+		
+		// Determine the space required for the top-level AS build
+		as_inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+		as_inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+		as_inputs.NumDescs = 1;
+		// Note: we don't need to give it the instance descriptors to estimate the size, just
+		// when we want to build the data. Just unset the geom descs. now since we're re-using it
+		as_inputs.pGeometryDescs = 0;
+		as_inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+
+		device->GetRaytracingAccelerationStructurePrebuildInfo(&as_inputs, &prebuild_info);
+		// The buffer sizes must be aligned to 256 bytes
+		prebuild_info.ResultDataMaxSizeInBytes +=
+			prebuild_info.ResultDataMaxSizeInBytes % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
+		// TODO: Not sure the scratch needs this alignment
+		prebuild_info.ScratchDataSizeInBytes +=
+			prebuild_info.ScratchDataSizeInBytes % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
+
+		std::cout << "Top level AS will use at most " << prebuild_info.ResultDataMaxSizeInBytes
+			<< " bytes, and scratch of " << prebuild_info.ScratchDataSizeInBytes << " bytes\n";
 
 		CHECK_ERR(cmd_list->Close());
 
