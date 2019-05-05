@@ -12,6 +12,7 @@
 #include <combaseapi.h>
 #include <wrl.h>
 #include <Winerror.h>
+#include "rt_shader_embedded_dxil.h"
 
 #define CHECK_ERR(FN) \
 	{ \
@@ -123,7 +124,7 @@ int main(int argc, const char **argv) {
 
 	// Load assets
 
-	// Make an empty root signature
+	// Make an empty root signature for the rasterized triangle render
 	ComPtr<ID3D12RootSignature> root_signature;	
 	{
 		D3D12_ROOT_SIGNATURE_DESC desc = {0};
@@ -136,7 +137,7 @@ int main(int argc, const char **argv) {
 					signature->GetBufferSize(), IID_PPV_ARGS(&root_signature)));
 	}
 
-	// Setup the pipeline state and the shaders which will be used for it
+	// Setup the pipeline state and the shaders which will be used for rasterizing the triangle
 	ComPtr<ID3D12PipelineState> pipeline_state;
 	{
 		ComPtr<ID3DBlob> compiler_errors;
@@ -464,6 +465,11 @@ int main(int argc, const char **argv) {
 			build_barrier.UAV.pResource = top_level_as.Get();
 			cmd_list->ResourceBarrier(1, &build_barrier);
 		}
+
+		// Load the DXIL shader library
+		D3D12_SHADER_BYTECODE dxil_bytecode = { 0 };
+		dxil_bytecode.pShaderBytecode = rt_shader_dxil;
+		dxil_bytecode.BytecodeLength = sizeof(rt_shader_dxil);
 
 		CHECK_ERR(cmd_list->Close());
 

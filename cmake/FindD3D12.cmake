@@ -52,6 +52,7 @@ else()
 endif()
 
 function(add_dxil_embed_library)
+	# TODO: Includes and compile defs (-I, -D)
 	set(options COMPILE_DEFINITIONS) 
 	cmake_parse_arguments(PARSE_ARGV 1 DXIL "" "" "${options}")
 
@@ -62,17 +63,21 @@ function(add_dxil_embed_library)
 	foreach (SRC ${HLSL_SRCS})
 		get_filename_component(FNAME ${SRC} NAME_WE)
 
-		set(DXIL_EMBED_FILE "${CMAKE_CURRENT_BINARY_DIR}/${FNAME}_embedded_dxil.c")
+		set(DXIL_EMBED_FILE "${CMAKE_CURRENT_BINARY_DIR}/${FNAME}_embedded_dxil.h")
 		add_custom_command(OUTPUT ${DXIL_EMBED_FILE}
 			COMMAND ${D3D12_SHADER_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/${SRC}
 			-T lib_6_3 -Fh ${DXIL_EMBED_FILE} -Vn ${FNAME}_dxil -Zi
+			-default-linkage external
 			DEPENDS ${SRC}
 			COMMENT "Compiling and embedding ${SRC} as ${FNAME}_dxil")
 
 		list(APPEND DXIL_SRCS ${DXIL_EMBED_FILE})
 	endforeach()
 
-	add_library(${DXIL_LIB} ${DXIL_SRCS})
+	add_library(${DXIL_LIB} INTERFACE)
+	target_sources(${DXIL_LIB} INTERFACE ${DXIL_SRCS})
+	target_include_directories(${DXIL_LIB} INTERFACE
+		$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
 endfunction()
 
 
