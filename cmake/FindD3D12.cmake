@@ -38,6 +38,8 @@ if (CMAKE_SIZEOF_VOID_P EQUAL 8)
 		HINTS ${WIN10_SDK_PATH}/Lib/${WIN10_SDK_VERSION}/um/x64)
 	find_library(DXGI_LIBRARY NAMES dxgi.lib
 		HINTS ${WIN10_SDK_PATH}/Lib/${WIN10_SDK_VERSION}/um/x64)
+	find_program(D3D12_SHADER_COMPILER NAMES dxc
+		PATHS ${WIN10_SDK_PATH}/bin/${WIN10_SDK_VERSION}/x64)
 else()
 	find_library(D3D12_LIBRARY NAMES d3d12.lib
 		HINTS ${WIN10_SDK_PATH}/Lib/${WIN10_SDK_VERSION}/um/x86)
@@ -45,7 +47,34 @@ else()
 		HINTS ${WIN10_SDK_PATH}/Lib/${WIN10_SDK_VERSION}/um/x86)
 	find_library(DXGI_LIBRARY NAMES dxgi.lib
 		HINTS ${WIN10_SDK_PATH}/Lib/${WIN10_SDK_VERSION}/um/x86)
+	find_program(D3D12_SHADER_COMPILER NAMES dxc
+		PATHS ${WIN10_SDK_PATH}/bin/${WIN10_SDK_VERSION}/x86)
 endif()
+
+function(add_dxil_embed_library)
+	set(options COMPILE_DEFINITIONS) 
+	cmake_parse_arguments(PARSE_ARGV 1 DXIL "" "" "${options}")
+
+	set(DXIL_LIB ${ARGV0})
+	set(HLSL_SRCS ${DXIL_UNPARSED_ARGUMENTS})
+
+	set(DXIL_SRCS "")
+	foreach (SRC ${HLSL_SRCS})
+		get_filename_component(FNAME ${SRC} NAME_WE)
+
+		set(DXIL_EMBED_FILE "${CMAKE_CURRENT_BINARY_DIR}/${FNAME}_embedded_dxil.c")
+		add_custom_command(OUTPUT ${DXIL_EMBED_FILE}
+			COMMAND ${D3D12_SHADER_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/${SRC}
+			-T lib_6_3 -Fh ${DXIL_EMBED_FILE} -Vn ${FNAME}_dxil -Zi
+			DEPENDS ${SRC}
+			COMMENT "Compiling and embedding ${SRC} as ${FNAME}_dxil")
+
+		list(APPEND DXIL_SRCS ${DXIL_EMBED_FILE})
+	endforeach()
+
+	add_library(${DXIL_LIB} ${DXIL_SRCS})
+endfunction()
+
 
 set(D3D12_LIBRARIES ${D3D12_LIBRARY} ${D3D12_COMPILER_LIBRARY} ${DXGI_LIBRARY})
 set(D3D12_INCLUDE_DIRS ${D3D12_INCLUDE_DIR} ${DXGI_INCLUDE_DIR})
@@ -54,7 +83,7 @@ include(FindPackageHandleStandardArgs)
 # handle the QUIETLY and REQUIRED arguments and set D3D12_FOUND to TRUE
 # if all listed variables are TRUE
 find_package_handle_standard_args(D3D12 DEFAULT_MSG
-	D3D12_INCLUDE_DIRS D3D12_LIBRARIES)
+	D3D12_INCLUDE_DIRS D3D12_LIBRARIES D3D12_SHADER_COMPILER)
 
-mark_as_advanced(D3D12_INCLUDE_DIRS D3D12_LIBRARIES)
+mark_as_advanced(D3D12_INCLUDE_DIRS D3D12_LIBRARIES D3D12_SHADER_COMPILER)
 
