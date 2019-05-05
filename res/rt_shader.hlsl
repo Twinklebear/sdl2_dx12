@@ -1,3 +1,4 @@
+// https://developer.nvidia.com/rtx/raytracing/dxr/DX12-Raytracing-tutorial-Part-2
 struct HitInfo {
   float4 color_dist;
 };
