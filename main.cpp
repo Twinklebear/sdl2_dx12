@@ -499,7 +499,7 @@ int main(int argc, const char **argv) {
 		// describe the shader code libraries, hit groups, root signature associations and
 		// some other config stuff
 		std::vector<D3D12_STATE_SUBOBJECT> subobjects;
-		subobjects.resize(9);
+		subobjects.resize(7);
 		size_t current_subobj = 0;
 		{
 			D3D12_STATE_SUBOBJECT dxil_libs = { 0 };
@@ -553,44 +553,6 @@ int main(int argc, const char **argv) {
 			root_assoc.Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
 			root_assoc.pDesc = &root_sig_assoc;
 			subobjects[current_subobj++] = root_assoc;
-		}
-
-		// The pipeline construction for some reason always needs an empty global and local root signature
-		// according to the samples and NV wrapper. TODO WILL: Why? What are these for? Global scene stuff
-		// which is set across all shaders??
-		// Make the dummy global and local root signatures
-		ComPtr<ID3D12RootSignature> dummy_global, dummy_local;
-		{
-			D3D12_ROOT_SIGNATURE_DESC desc = { 0 };
-			desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
-
-			ComPtr<ID3DBlob> signature;
-			ComPtr<ID3DBlob> error;
-			CHECK_ERR(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error));
-			CHECK_ERR(device->CreateRootSignature(0, signature->GetBufferPointer(),
-				signature->GetBufferSize(), IID_PPV_ARGS(&dummy_global)));
-
-			desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
-			CHECK_ERR(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error));
-			CHECK_ERR(device->CreateRootSignature(0, signature->GetBufferPointer(),
-				signature->GetBufferSize(), IID_PPV_ARGS(&dummy_local)));
-		}
-		
-		// Add them to the state
-		D3D12_GLOBAL_ROOT_SIGNATURE dummy_global_sig;
-		dummy_global_sig.pGlobalRootSignature = dummy_global.Get();
-		
-		D3D12_LOCAL_ROOT_SIGNATURE dummy_local_sig;
-		dummy_local_sig.pLocalRootSignature = dummy_local.Get();
-		{
-			D3D12_STATE_SUBOBJECT dummy_sig = { 0 };
-			dummy_sig.Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
-			dummy_sig.pDesc = &dummy_global_sig;
-			subobjects[current_subobj++] = dummy_sig;
-			
-			dummy_sig.Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
-			dummy_sig.pDesc = &dummy_local_sig;
-			subobjects[current_subobj++] = dummy_sig;
 		}
 
 		// Add a subobject for the ray tracing pipeline configuration
