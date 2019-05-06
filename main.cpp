@@ -240,6 +240,7 @@ int main(int argc, const char **argv) {
 	ComPtr<ID3D12Resource> rt_output_img;
 	ComPtr<ID3D12DescriptorHeap> rt_shader_res_heap;
 	ComPtr<ID3D12Resource> rt_shader_table;
+	ComPtr<ID3D12RootSignature> rt_root_signature;
 	
 	D3D12_VERTEX_BUFFER_VIEW vbo_view;
 	{
@@ -348,9 +349,9 @@ int main(int argc, const char **argv) {
 		device->GetRaytracingAccelerationStructurePrebuildInfo(&as_inputs, &prebuild_info);
 
 		// The buffer sizes must be aligned to 256 bytes
-		prebuild_info.ResultDataMaxSizeInBytes +=
+		prebuild_info.ResultDataMaxSizeInBytes += D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT -
 			prebuild_info.ResultDataMaxSizeInBytes % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
-		prebuild_info.ScratchDataSizeInBytes +=
+		prebuild_info.ScratchDataSizeInBytes += D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT -
 			prebuild_info.ScratchDataSizeInBytes % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
 	
 		std::cout << "Bottom level AS will use at most " << prebuild_info.ResultDataMaxSizeInBytes
@@ -409,10 +410,10 @@ int main(int argc, const char **argv) {
 
 		device->GetRaytracingAccelerationStructurePrebuildInfo(&as_inputs, &prebuild_info);
 		// The buffer sizes must be aligned to 256 bytes
-		prebuild_info.ResultDataMaxSizeInBytes +=
+		prebuild_info.ResultDataMaxSizeInBytes += D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT -
 			prebuild_info.ResultDataMaxSizeInBytes % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
 		// TODO: Not sure the scratch needs this alignment
-		prebuild_info.ScratchDataSizeInBytes +=
+		prebuild_info.ScratchDataSizeInBytes += D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT -
 			prebuild_info.ScratchDataSizeInBytes % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
 
 		std::cout << "Top level AS will use at most " << prebuild_info.ResultDataMaxSizeInBytes
@@ -431,7 +432,8 @@ int main(int argc, const char **argv) {
 		// Allocate space for the instances as well
 		res_desc.Width = sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
 		// Align it as well to the constant buffer size
-		res_desc.Width += res_desc.Width % D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT;
+		res_desc.Width += D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT -
+			res_desc.Width % D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT;
 		// We want to write from the CPU to this buffer so place in the upload heap
 		props.Type = D3D12_HEAP_TYPE_UPLOAD;
 		res_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
@@ -533,7 +535,6 @@ int main(int argc, const char **argv) {
 		// Create the root signature for this shader library
 		// Note that the closest hit and miss shaders don't need one since they
 		// don't make use of a local root signature (no reads from buffers/textures)
-		ComPtr<ID3D12RootSignature> rt_root_signature;
 		{
 			std::vector<D3D12_ROOT_PARAMETER> rt_params;
 			// The raygen program takes two parameters:
@@ -783,10 +784,14 @@ int main(int argc, const char **argv) {
 		// In this example it's simple: our ray gen program takes a single ptr arg to the rt_shader_res_heap,
 		// and our others don't take arguments at all
 		{
-			// 3 shaders and one that takes a single pointer param (ray-gen)
-			uint32_t sbt_table_size = 3 * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES + 8;
+			// 3 shaders and one that takes a single pointer param (ray-gen). However, each shader
+			// binding table in the dispatch rays must have its address start at a 64byte alignment,
+			// and use a 32byte stride. So pad these out to meet those requirements by making each
+			// entry 64 bytes
+			uint32_t sbt_table_size = 4 * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
 			// What's the alignment requirement here?
-			sbt_table_size += sbt_table_size % D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
+			sbt_table_size += D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT -
+				sbt_table_size % D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
 			std::cout << "SBT is " << sbt_table_size << " bytes\n";
 
 			D3D12_HEAP_PROPERTIES props = { 0 };
@@ -822,15 +827,15 @@ int main(int argc, const char **argv) {
 			sbt_map += D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
 			
 			std::memcpy(sbt_map, &res_heap_handle.ptr, sizeof(uint64_t));
-			sbt_map += sizeof(uint64_t);
+			// Each entry must start at an alignment of 32bytes, so offset by the required alignment
+			sbt_map += D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
 
 			std::memcpy(sbt_map, rt_pipeline_props->GetShaderIdentifier(L"Miss"),
 				D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
-			sbt_map += D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+			sbt_map += 2 * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
 			
 			std::memcpy(sbt_map, rt_pipeline_props->GetShaderIdentifier(L"HitGroup"),
 				D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
-			sbt_map += D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
 
 			rt_shader_table->Unmap(0, nullptr);
 		}
@@ -920,12 +925,14 @@ int main(int argc, const char **argv) {
 
 		// Build the command list to clear the frame color
 		CHECK_ERR(cmd_allocator->Reset());
-
+#if 0
 		CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), pipeline_state.Get()));
-
 		cmd_list->SetGraphicsRootSignature(root_signature.Get());
 		cmd_list->RSSetViewports(1, &viewport);
 		cmd_list->RSSetScissorRects(1, &screen_bounds);
+#else
+		CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
+#endif
 
 		// Back buffer will be used as render target
 		{
@@ -945,14 +952,11 @@ int main(int argc, const char **argv) {
 
 		const std::array<float, 4> clear_color = {0.f, 0.2f, 0.4f, 1.f};
 		cmd_list->ClearRenderTargetView(render_target, clear_color.data(), 0, nullptr);
-#if 1
+#if 0
 		// Rasterize the triangle
 		cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		cmd_list->IASetVertexBuffers(0, 1, &vbo_view);
 		cmd_list->DrawInstanced(3, 1, 0, 0);
-#else
-		// TODO: Ray trace it
-#endif
 
 		// Back buffer will now be used to present
 		{
@@ -965,6 +969,87 @@ int main(int argc, const char **argv) {
 			res_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			cmd_list->ResourceBarrier(1, &res_barrier);
 		}
+#else
+		// Ray trace it!
+		// Bind our descriptor heap with the output texture and the accel. structure
+		std::vector<ID3D12DescriptorHeap*> heaps = { rt_shader_res_heap.Get() };
+		cmd_list->SetDescriptorHeaps(heaps.size(), heaps.data());
+
+		// Transition the output buffer back to a unordered access, since we'll have it copy source
+		// from blitting the image
+		{
+			D3D12_RESOURCE_BARRIER res_barrier;
+			res_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			res_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			res_barrier.Transition.pResource = rt_output_img.Get();
+			res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+			res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			res_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			cmd_list->ResourceBarrier(1, &res_barrier);
+		}
+
+		D3D12_DISPATCH_RAYS_DESC dispatch_rays = { 0 };
+		// Tell the dispatch rays how we built our shader binding table
+
+		// RayGen is first, and has a shader identifier and one param
+		dispatch_rays.RayGenerationShaderRecord.StartAddress = rt_shader_table->GetGPUVirtualAddress();
+		dispatch_rays.RayGenerationShaderRecord.SizeInBytes = 2 * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+		
+		// Miss is next, followed by hit, each is just a shader identifier
+		dispatch_rays.MissShaderTable.StartAddress =
+			rt_shader_table->GetGPUVirtualAddress() + 2 * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+		dispatch_rays.MissShaderTable.SizeInBytes = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+		dispatch_rays.MissShaderTable.StrideInBytes = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+
+		dispatch_rays.HitGroupTable.StartAddress =
+			rt_shader_table->GetGPUVirtualAddress() + 4 * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+		dispatch_rays.HitGroupTable.SizeInBytes = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+		dispatch_rays.HitGroupTable.StrideInBytes = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+
+		dispatch_rays.Width = win_width;
+		dispatch_rays.Height = win_height;
+		dispatch_rays.Depth = 1;
+
+		cmd_list->SetDescriptorHeaps(1, rt_shader_res_heap.GetAddressOf());
+		cmd_list->SetPipelineState1(rt_state_object.Get());
+
+		cmd_list->DispatchRays(&dispatch_rays);
+
+		// Now copy the output buffer data to the back buffer to display it
+		// Transition the raytrace image to copy source and the back buffer to copy dest
+		{
+			std::array<D3D12_RESOURCE_BARRIER, 2> barriers;
+			barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barriers[0].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			barriers[0].Transition.pResource = rt_output_img.Get();
+			barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+			barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+			barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barriers[1].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			barriers[1].Transition.pResource = render_targets[back_buffer_idx].Get();
+			barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+			barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+			barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			
+			cmd_list->ResourceBarrier(barriers.size(), barriers.data());
+		}
+
+		cmd_list->CopyResource(render_targets[back_buffer_idx].Get(), rt_output_img.Get());
+
+		// Swap the back buffer to present so it can be displayed
+		{
+			D3D12_RESOURCE_BARRIER res_barrier;
+			res_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			res_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+			res_barrier.Transition.pResource = render_targets[back_buffer_idx].Get();
+			res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+			res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+			res_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			cmd_list->ResourceBarrier(1, &res_barrier);
+		}
+#endif
 
 		CHECK_ERR(cmd_list->Close());
 
