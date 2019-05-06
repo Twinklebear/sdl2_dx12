@@ -239,6 +239,7 @@ int main(int argc, const char **argv) {
 	ComPtr<ID3D12StateObject> rt_state_object;
 	ComPtr<ID3D12Resource> rt_output_img;
 	ComPtr<ID3D12DescriptorHeap> rt_shader_res_heap;
+	ComPtr<ID3D12Resource> rt_shader_table;
 	
 	D3D12_VERTEX_BUFFER_VIEW vbo_view;
 	{
@@ -516,9 +517,10 @@ int main(int argc, const char **argv) {
 
 		// Build the hit group which uses our shader library
 		D3D12_HIT_GROUP_DESC hit_group = { 0 };
-		hit_group.HitGroupExport = L"MyHitGroup";
+		hit_group.HitGroupExport = L"HitGroup";
 		hit_group.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
 		hit_group.ClosestHitShaderImport = L"ClosestHit";
+
 
 		// Make the shader config which defines the maximum size in bytes for the ray
 		// payload and attribute structure
@@ -762,6 +764,75 @@ int main(int argc, const char **argv) {
 			tlas_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 			tlas_desc.RaytracingAccelerationStructure.Location = top_level_as->GetGPUVirtualAddress();
 			device->CreateShaderResourceView(nullptr, &tlas_desc, heap_handle);
+		}
+
+		// ===============================
+		// Create the shader binding table
+		// This is a table of pointers to the shader code and their respective descriptor heaps
+		// ===============================
+		D3D12_GPU_DESCRIPTOR_HANDLE res_heap_handle = rt_shader_res_heap->GetGPUDescriptorHandleForHeapStart();
+
+		ID3D12StateObjectProperties *rt_pipeline_props = nullptr;
+		rt_state_object->QueryInterface(&rt_pipeline_props);
+		
+		// An SBT entry is the program ID along with a set of params for the program.
+		// the params are either 8 byte pointers (or the example mentions 4 byte constants, how to set or use those?)
+		// Furthermore, the stride between elements is specified per-group (ray gen, hit, miss, etc) so it
+		// must be padded to the largest size required by any individual entry. Note the order also matters for
+		// and should match the instance contribution to hit group index.
+		// In this example it's simple: our ray gen program takes a single ptr arg to the rt_shader_res_heap,
+		// and our others don't take arguments at all
+		{
+			// 3 shaders and one that takes a single pointer param (ray-gen)
+			uint32_t sbt_table_size = 3 * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES + 8;
+			// What's the alignment requirement here?
+			sbt_table_size += sbt_table_size % D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
+			std::cout << "SBT is " << sbt_table_size << " bytes\n";
+
+			D3D12_HEAP_PROPERTIES props = { 0 };
+			props.Type = D3D12_HEAP_TYPE_UPLOAD;
+			props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+			props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+			D3D12_RESOURCE_DESC res_desc = { 0 };
+			res_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			res_desc.Width = sbt_table_size;
+			res_desc.Height = 1;
+			res_desc.DepthOrArraySize = 1;
+			res_desc.MipLevels = 1;
+			res_desc.Format = DXGI_FORMAT_UNKNOWN;
+			res_desc.SampleDesc.Count = 1;
+			res_desc.SampleDesc.Quality = 0;
+			res_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			res_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+			// Place the vertex data in an upload heap first, then do a GPU-side copy
+			// into a default heap (resident in VRAM)
+			CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+				&res_desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+				nullptr, IID_PPV_ARGS(&rt_shader_table)));
+
+			// Map the SBT and write our shader data and param info to it
+			uint8_t *sbt_map = nullptr;
+			CHECK_ERR(rt_shader_table->Map(0, nullptr, reinterpret_cast<void**>(&sbt_map)));
+
+			// First we write the ray-gen shader identifier, followed by the ptr to its descriptor heap
+			std::memcpy(sbt_map, rt_pipeline_props->GetShaderIdentifier(L"RayGen"),
+				D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+			sbt_map += D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+			
+			std::memcpy(sbt_map, &res_heap_handle.ptr, sizeof(uint64_t));
+			sbt_map += sizeof(uint64_t);
+
+			std::memcpy(sbt_map, rt_pipeline_props->GetShaderIdentifier(L"Miss"),
+				D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+			sbt_map += D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+			
+			std::memcpy(sbt_map, rt_pipeline_props->GetShaderIdentifier(L"HitGroup"),
+				D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+			sbt_map += D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+
+			rt_shader_table->Unmap(0, nullptr);
 		}
 	}
 
