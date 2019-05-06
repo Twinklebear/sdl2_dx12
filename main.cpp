@@ -85,7 +85,7 @@ int main(int argc, const char **argv) {
 
 	// Make a descriptor heap
 	ComPtr<ID3D12DescriptorHeap> rtv_heap;
-	D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc = {};
+	D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc = {0};
 	rtv_heap_desc.NumDescriptors = 2;
 	rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 	rtv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
@@ -236,12 +236,12 @@ int main(int argc, const char **argv) {
 		// this would be a two step process: Make a default heap and and upload heap,
 		// copy data from CPU to the upload heap, then from the upload heap into the
 		// default heap (which is memory resident on the GPU)
-		D3D12_HEAP_PROPERTIES props = {};
+		D3D12_HEAP_PROPERTIES props = {0};
 		props.Type = D3D12_HEAP_TYPE_UPLOAD;
 		props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
 		props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
 
-		D3D12_RESOURCE_DESC res_desc = {};
+		D3D12_RESOURCE_DESC res_desc = {0};
 		res_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 		res_desc.Width = sizeof(float) * vertex_data.size();
 		res_desc.Height = 1;
