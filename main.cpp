@@ -43,9 +43,8 @@ int main(int argc, const char **argv) {
 	}
 
 	SDL_Window* window = SDL_CreateWindow("SDL2 + DX12",
-		SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_width, win_height, 0);
-	// todo: resizing means we need to re-create the RT output buffer
-		//SDL_WINDOW_RESIZABLE);
+		SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_width, win_height,
+		SDL_WINDOW_RESIZABLE);
 
 	SDL_SysWMinfo wm_info;
 	SDL_VERSION(&wm_info.version);
@@ -130,106 +129,12 @@ int main(int argc, const char **argv) {
 
 	// Load assets
 
-	// Make an empty root signature for the rasterized triangle render
-	ComPtr<ID3D12RootSignature> root_signature;	
-	{
-		D3D12_ROOT_SIGNATURE_DESC desc = {0};
-		desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-		ComPtr<ID3DBlob> signature;
-		ComPtr<ID3DBlob> error;
-		CHECK_ERR(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error));
-		CHECK_ERR(device->CreateRootSignature(0, signature->GetBufferPointer(),
-					signature->GetBufferSize(), IID_PPV_ARGS(&root_signature)));
-	}
-
 	// Setup the pipeline state and the shaders which will be used for rasterizing the triangle
-	ComPtr<ID3D12PipelineState> pipeline_state;
-	{
-		ComPtr<ID3DBlob> compiler_errors;
-		ComPtr<ID3DBlob> vertex_shader;
-		ComPtr<ID3DBlob> pixel_shader;
-		const uint32_t compile_flags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-		if (FAILED(D3DCompileFromFile(L"res/shader.hlsl", nullptr, nullptr,
-				"VSMain", "vs_5_0", compile_flags, 0, &vertex_shader, &compiler_errors)))
-		{
-			std::cout << "Failed to compile vertex shader, err msg: "
-				<< reinterpret_cast<char*>(compiler_errors->GetBufferPointer())
-				<< std::endl << std::flush;
-			throw std::runtime_error("VS did not compile");
-		}
-		if (FAILED(D3DCompileFromFile(L"res/shader.hlsl", nullptr, nullptr,
-				"PSMain", "ps_5_0", compile_flags, 0, &pixel_shader, &compiler_errors)))
-		{
-			std::cout << "Failed to compile pixel shader, err msg: "
-				<< reinterpret_cast<char*>(compiler_errors->GetBufferPointer())
-				<< std::endl << std::flush;
-			throw std::runtime_error("PS did not compile");
-		}
-
-		// Specify the vertex data layout
-		std::array<D3D12_INPUT_ELEMENT_DESC, 2> vertex_layout = {
-			D3D12_INPUT_ELEMENT_DESC{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
-				D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-			D3D12_INPUT_ELEMENT_DESC{"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16,
-				D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}
-		};
-
-		// Create the graphic pipeline state description
-		D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {0};
-		desc.pRootSignature = root_signature.Get();
-
-		desc.VS.pShaderBytecode = vertex_shader->GetBufferPointer();
-		desc.VS.BytecodeLength = vertex_shader->GetBufferSize();
-		desc.PS.pShaderBytecode = pixel_shader->GetBufferPointer();
-		desc.PS.BytecodeLength = pixel_shader->GetBufferSize();
-
-		desc.BlendState.AlphaToCoverageEnable = FALSE;
-		desc.BlendState.IndependentBlendEnable = FALSE;
-		{
-			const D3D12_RENDER_TARGET_BLEND_DESC rt_blend_desc = {
-				false, false,
-				D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
-				D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
-				D3D12_LOGIC_OP_NOOP,
-				D3D12_COLOR_WRITE_ENABLE_ALL,
-			};
-			for (int i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
-				desc.BlendState.RenderTarget[i] = rt_blend_desc;
-			}
-		}
-
-		desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-		desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-		desc.RasterizerState.FrontCounterClockwise = FALSE;
-		desc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-		desc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-		desc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-		desc.RasterizerState.DepthClipEnable = TRUE;
-		desc.RasterizerState.MultisampleEnable = FALSE;
-		desc.RasterizerState.AntialiasedLineEnable = FALSE;
-		desc.RasterizerState.ForcedSampleCount = 0;
-		desc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
-
-		desc.SampleMask = UINT_MAX;
-		desc.DepthStencilState.DepthEnable = false;
-		desc.DepthStencilState.StencilEnable = false;
-
-		desc.InputLayout.pInputElementDescs = vertex_layout.data();
-		desc.InputLayout.NumElements = vertex_layout.size();
-		desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-
-		desc.NumRenderTargets = 1;
-		desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-		desc.SampleDesc.Count = 1;
-
-		CHECK_ERR(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline_state)));
-	}
-
+	
 	// Make the command list
 	ComPtr<ID3D12GraphicsCommandList4> cmd_list;
 	CHECK_ERR(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_allocator.Get(),
-				pipeline_state.Get(), IID_PPV_ARGS(&cmd_list)));
+				nullptr, IID_PPV_ARGS(&cmd_list)));
 	CHECK_ERR(cmd_list->Close());
 
 	// Create the VBO containing the triangle data
@@ -290,7 +195,7 @@ int main(int argc, const char **argv) {
 					&res_desc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
 					nullptr, IID_PPV_ARGS(&vbo)));
 
-		CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), pipeline_state.Get()));
+		CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
 
 		// Transition vbo buffer to a copy dest buffer
 		D3D12_RESOURCE_BARRIER res_barrier;
@@ -869,16 +774,6 @@ int main(int argc, const char **argv) {
 		top_scratch = nullptr;
 	}
 
-	D3D12_RECT screen_bounds = {0};
-	screen_bounds.right = win_width;
-	screen_bounds.bottom = win_height;
-
-	D3D12_VIEWPORT viewport = {0};
-	viewport.Width = static_cast<float>(win_width);
-	viewport.Height = static_cast<float>(win_height);
-	viewport.MinDepth = D3D12_MIN_DEPTH;
-	viewport.MaxDepth = D3D12_MAX_DEPTH;
-
 	int back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
 	bool done = false;
 	while (!done) {
@@ -916,23 +811,44 @@ int main(int argc, const char **argv) {
 					rtv_handle.ptr += rtv_descriptor_size;
 				}
 
-				screen_bounds.right = win_width;
-				screen_bounds.bottom = win_height;
-				viewport.Width = static_cast<float>(win_width);
-				viewport.Height = static_cast<float>(win_height);
+				// Resize the output buffer
+				{
+					rt_output_img = nullptr;
+					D3D12_HEAP_PROPERTIES props = { 0 };
+					props.Type = D3D12_HEAP_TYPE_DEFAULT;
+					props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+					props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+					D3D12_RESOURCE_DESC res_desc = { 0 };
+					res_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+					res_desc.Width = win_width;
+					res_desc.Height = win_height;
+					res_desc.DepthOrArraySize = 1;
+					res_desc.MipLevels = 1;
+					res_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+					res_desc.SampleDesc.Count = 1;
+					res_desc.SampleDesc.Quality = 0;
+					res_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+					res_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+					CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+						&res_desc, D3D12_RESOURCE_STATE_COPY_SOURCE,
+						nullptr, IID_PPV_ARGS(&rt_output_img)));
+
+					// Update the descriptor heap to the resized texture
+					D3D12_CPU_DESCRIPTOR_HANDLE heap_handle = rt_shader_res_heap->GetCPUDescriptorHandleForHeapStart();
+
+					D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = { 0 };
+					uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+					device->CreateUnorderedAccessView(rt_output_img.Get(), nullptr, &uav_desc, heap_handle);
+				}
 			}
 		}
 
 		// Build the command list to clear the frame color
 		CHECK_ERR(cmd_allocator->Reset());
-#if 0
-		CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), pipeline_state.Get()));
-		cmd_list->SetGraphicsRootSignature(root_signature.Get());
-		cmd_list->RSSetViewports(1, &viewport);
-		cmd_list->RSSetScissorRects(1, &screen_bounds);
-#else
+
 		CHECK_ERR(cmd_list->Reset(cmd_allocator.Get(), nullptr));
-#endif
 
 		// Back buffer will be used as render target
 		{
@@ -952,24 +868,7 @@ int main(int argc, const char **argv) {
 
 		const std::array<float, 4> clear_color = {0.f, 0.2f, 0.4f, 1.f};
 		cmd_list->ClearRenderTargetView(render_target, clear_color.data(), 0, nullptr);
-#if 0
-		// Rasterize the triangle
-		cmd_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		cmd_list->IASetVertexBuffers(0, 1, &vbo_view);
-		cmd_list->DrawInstanced(3, 1, 0, 0);
 
-		// Back buffer will now be used to present
-		{
-			D3D12_RESOURCE_BARRIER res_barrier;
-			res_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			res_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-			res_barrier.Transition.pResource = render_targets[back_buffer_idx].Get();
-			res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-			res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-			res_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			cmd_list->ResourceBarrier(1, &res_barrier);
-		}
-#else
 		// Ray trace it!
 		// Bind our descriptor heap with the output texture and the accel. structure
 		std::vector<ID3D12DescriptorHeap*> heaps = { rt_shader_res_heap.Get() };
@@ -1049,7 +948,6 @@ int main(int argc, const char **argv) {
 			res_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			cmd_list->ResourceBarrier(1, &res_barrier);
 		}
-#endif
 
 		CHECK_ERR(cmd_list->Close());
 
@@ -1062,6 +960,8 @@ int main(int argc, const char **argv) {
 		const uint32_t signal_val = fence_value++;
 		CHECK_ERR(cmd_queue->Signal(fence.Get(), signal_val));
 
+		// TODO: Seems like sometimes this fence doesn't really wait how I expect it to
+		// and I get flickering?
 		if (fence->GetCompletedValue() < signal_val) {
 			CHECK_ERR(fence->SetEventOnCompletion(signal_val, fence_evt));
 			WaitForSingleObject(fence_evt, INFINITE);
