@@ -15,7 +15,8 @@
 #include <combaseapi.h>
 #include <wrl.h>
 #include <Winerror.h>
-
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 #include "rt_shader_embedded_dxil.h"
 
 #define CHECK_ERR(FN) \
@@ -136,6 +137,32 @@ int main(int argc, const char **argv) {
 	CHECK_ERR(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_allocator.Get(),
 				nullptr, IID_PPV_ARGS(&cmd_list)));
 	CHECK_ERR(cmd_list->Close());
+
+	// Make a buffer to readback the rendered texture
+	ComPtr<ID3D12Resource> readback_img_buf;
+	{
+
+		D3D12_HEAP_PROPERTIES props = { 0 };
+		props.Type = D3D12_HEAP_TYPE_READBACK;
+		props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+		props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+		D3D12_RESOURCE_DESC res_desc = { 0 };
+		res_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		res_desc.Width = win_width * win_height * 4;
+		res_desc.Height = 1;
+		res_desc.DepthOrArraySize = 1;
+		res_desc.MipLevels = 1;
+		res_desc.Format = DXGI_FORMAT_UNKNOWN;
+		res_desc.SampleDesc.Count = 1;
+		res_desc.SampleDesc.Quality = 0;
+		res_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		res_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+		CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+			&res_desc, D3D12_RESOURCE_STATE_COPY_DEST,
+			nullptr, IID_PPV_ARGS(&readback_img_buf)));
+	}
 
 	// Create the VBO containing the triangle data
 	ComPtr<ID3D12Resource> vbo, upload;
@@ -738,6 +765,7 @@ int main(int argc, const char **argv) {
 
 	int back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
 	bool done = false;
+	bool take_screenshot = false;
 	while (!done) {
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
@@ -750,6 +778,9 @@ int main(int argc, const char **argv) {
 			if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE
 					&& event.window.windowID == SDL_GetWindowID(window)) {
 				done = true;
+			}
+			if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_p) {
+				take_screenshot = true;
 			}
 			if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
 				win_width = event.window.data1;
@@ -803,6 +834,31 @@ int main(int argc, const char **argv) {
 					D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = { 0 };
 					uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 					device->CreateUnorderedAccessView(rt_output_img.Get(), nullptr, &uav_desc, heap_handle);
+				}
+
+				// Resize the readback buffer
+				{
+					readback_img_buf = nullptr;
+					D3D12_HEAP_PROPERTIES props = { 0 };
+					props.Type = D3D12_HEAP_TYPE_READBACK;
+					props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+					props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+					D3D12_RESOURCE_DESC res_desc = { 0 };
+					res_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+					res_desc.Width = win_width;
+					res_desc.Height = win_height;
+					res_desc.DepthOrArraySize = 1;
+					res_desc.MipLevels = 1;
+					res_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+					res_desc.SampleDesc.Count = 1;
+					res_desc.SampleDesc.Quality = 0;
+					res_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+					res_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+					CHECK_ERR(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE,
+						&res_desc, D3D12_RESOURCE_STATE_COPY_DEST,
+						nullptr, IID_PPV_ARGS(&readback_img_buf)));
 				}
 			}
 		}
@@ -899,6 +955,34 @@ int main(int argc, const char **argv) {
 
 		cmd_list->CopyResource(render_targets[back_buffer_idx].Get(), rt_output_img.Get());
 
+		// If we're taking a screenshot also copy the rendered image to our readback buffer
+		if (take_screenshot) {
+					// The output image is already in the copy source state so we don't need a barrier here
+			D3D12_TEXTURE_COPY_LOCATION dst_desc = { 0 };
+			dst_desc.pResource = readback_img_buf.Get();
+			dst_desc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+			dst_desc.PlacedFootprint.Offset = 0;
+			dst_desc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			dst_desc.PlacedFootprint.Footprint.Width = win_width;
+			dst_desc.PlacedFootprint.Footprint.Height = win_height;
+			dst_desc.PlacedFootprint.Footprint.Depth = 1;
+			dst_desc.PlacedFootprint.Footprint.RowPitch = win_width * 4;
+
+			D3D12_TEXTURE_COPY_LOCATION src_desc = { 0 };
+			src_desc.pResource = rt_output_img.Get();
+			src_desc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+			src_desc.SubresourceIndex = 0;
+
+			D3D12_BOX region = { 0 };
+			region.left = 0;
+			region.right = win_width;
+			region.top = 0;
+			region.bottom = win_height;
+			region.front = 0;
+			region.back = 1;
+			cmd_list->CopyTextureRegion(&dst_desc, 0, 0, 0, &src_desc, &region);
+		}
+
 		// Swap the back buffer to present so it can be displayed
 		{
 			D3D12_RESOURCE_BARRIER res_barrier;
@@ -912,10 +996,11 @@ int main(int argc, const char **argv) {
 		}
 
 		CHECK_ERR(cmd_list->Close());
-
-		// Execute the command list and present
-		std::array<ID3D12CommandList*, 1> cmd_lists = {cmd_list.Get()};
-		cmd_queue->ExecuteCommandLists(cmd_lists.size(), cmd_lists.data());
+		{
+			// Execute the command list and present
+			std::array<ID3D12CommandList*, 1> cmd_lists = { cmd_list.Get() };
+			cmd_queue->ExecuteCommandLists(cmd_lists.size(), cmd_lists.data());
+		}
 		CHECK_ERR(swap_chain->Present(1, 0));
 
 		// Sync with the fence to wait for the frame to be presented
@@ -929,6 +1014,15 @@ int main(int argc, const char **argv) {
 			WaitForSingleObject(fence_evt, INFINITE);
 		}
 
+		if (take_screenshot) {
+			take_screenshot = false;
+			// Now we can map the buffer and write it out to disk
+			uint8_t *buf = nullptr;
+			readback_img_buf->Map(0, nullptr, reinterpret_cast<void**>(&buf));
+			stbi_write_jpg("screenshot.jpg", win_width, win_height, 4, buf, 90);
+			readback_img_buf->Unmap(0, nullptr);
+		}
+		
 		// Update the back buffer index to the new back buffer now that the
 		// swap chain has swapped.
 		back_buffer_idx = swap_chain->GetCurrentBackBufferIndex();
