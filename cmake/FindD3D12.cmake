@@ -51,10 +51,22 @@ else()
 		PATHS ${WIN10_SDK_PATH}/bin/${WIN10_SDK_VERSION}/x86)
 endif()
 
+# Note that the include paths and defines should not have
+# the -I or -D prefix, respectively
 function(add_dxil_embed_library)
-	# TODO: Includes and compile defs (-I, -D)
-	set(options COMPILE_DEFINITIONS) 
+	set(options INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS)
 	cmake_parse_arguments(PARSE_ARGV 1 DXIL "" "" "${options}")
+
+	set(HLSL_INCLUDE_DIRS "")
+	foreach (inc ${DXIL_INCLUDE_DIRECTORIES})
+		file(TO_NATIVE_PATH "${inc}" native_path)
+		list(APPEND HLSL_INCLUDE_DIRS "-I${native_path}")
+	endforeach()
+
+	set(HLSL_COMPILE_DEFNS "")
+	foreach (def ${DXIL_COMPILE_DEFINITIONS})
+		list(APPEND HLSL_COMPILE_DEFNS "-D${def}")
+	endforeach()
 
 	set(DXIL_LIB ${ARGV0})
 	set(HLSL_SRCS ${DXIL_UNPARSED_ARGUMENTS})
@@ -66,8 +78,8 @@ function(add_dxil_embed_library)
 		set(DXIL_EMBED_FILE "${CMAKE_CURRENT_BINARY_DIR}/${FNAME}_embedded_dxil.h")
 		add_custom_command(OUTPUT ${DXIL_EMBED_FILE}
 			COMMAND ${D3D12_SHADER_COMPILER} ${CMAKE_CURRENT_LIST_DIR}/${SRC}
-			-T lib_6_3 -Fh ${DXIL_EMBED_FILE} -Vn ${FNAME}_dxil -Zi
-			-default-linkage external
+			-T lib_6_3 -Fh ${DXIL_EMBED_FILE} -Vn ${FNAME}_dxil
+			${HLSL_INCLUDE_DIRS} ${HLSL_COMPILE_DEFNS} ${DXIL_COMPILE_OPTIONS}
 			DEPENDS ${SRC}
 			COMMENT "Compiling and embedding ${SRC} as ${FNAME}_dxil")
 

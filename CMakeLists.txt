@@ -11,7 +11,9 @@ find_package(D3D12 REQUIRED)
 
 add_subdirectory(res)
 
-add_dxil_embed_library(rt_shader res/rt_shader.hlsl)
+add_dxil_embed_library(rt_shader res/rt_shader.hlsl
+	# TODO WILL Do we need the default linkage arg?
+	COMPILE_OPTIONS -Zi -default-linkage external)
 
 add_executable(sdl2_dx12 main.cpp)
 
