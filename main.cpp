@@ -174,7 +174,6 @@ int main(int argc, const char **argv) {
 	ComPtr<ID3D12Resource> rt_shader_table;
 	ComPtr<ID3D12RootSignature> rt_root_signature;
 	
-	D3D12_VERTEX_BUFFER_VIEW vbo_view;
 	{
 		const std::array<float, 24> vertex_data = {
 			0, 0.5, 0, 1,
@@ -245,11 +244,6 @@ int main(int argc, const char **argv) {
 			| D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
 		cmd_list->ResourceBarrier(1, &res_barrier);
-
-		// Setup the vertex buffer view
-		vbo_view.BufferLocation = vbo->GetGPUVirtualAddress();
-		vbo_view.StrideInBytes = sizeof(float) * 8;
-		vbo_view.SizeInBytes = sizeof(float) * vertex_data.size();
 
 		// ===============================
 		// Build the RT acceleration structures
