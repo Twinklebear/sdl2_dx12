@@ -239,9 +239,7 @@ int main(int argc, const char **argv) {
 
 		// Transition the vbo back to vertex and constant buffer state
 		res_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-		res_barrier.Transition.StateAfter =
-			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER
-			| D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+		res_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
 		cmd_list->ResourceBarrier(1, &res_barrier);
 
