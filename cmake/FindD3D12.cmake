@@ -86,8 +86,15 @@ function(add_dxil_embed_library)
 		list(APPEND DXIL_SRCS ${DXIL_EMBED_FILE})
 	endforeach()
 
+	# This is needed for some reason to get CMake to generate the file properly
+	# and not screw up the build, because the original approach of just
+	# setting target_sources on ${DXIL_LIB} stopped working once this got put
+	# in some subdirectory. CMake ¯\_(ツ)_/¯
+	set(DXIL_CMAKE_CUSTOM_WRAPPER ${DXIL_LIB}_custom_target)
+	add_custom_target(${DXIL_CMAKE_CUSTOM_WRAPPER} ALL DEPENDS ${DXIL_SRCS})
+
 	add_library(${DXIL_LIB} INTERFACE)
-	target_sources(${DXIL_LIB} INTERFACE ${DXIL_SRCS})
+	add_dependencies(${DXIL_LIB} ${DXIL_CMAKE_CUSTOM_WRAPPER})
 	target_include_directories(${DXIL_LIB} INTERFACE
 		$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
 endfunction()
