@@ -957,7 +957,7 @@ int main(int argc, const char **argv) {
 
 		// If we're taking a screenshot also copy the rendered image to our readback buffer
 		if (take_screenshot) {
-					// The output image is already in the copy source state so we don't need a barrier here
+			// The output image is already in the copy source state so we don't need a barrier here
 			D3D12_TEXTURE_COPY_LOCATION dst_desc = { 0 };
 			dst_desc.pResource = readback_img_buf.Get();
 			dst_desc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
