@@ -563,8 +563,8 @@ int main(int argc, const char **argv) {
 			root_sig_obj.pDesc = &rt_local_root_sig;
 			subobjects[current_subobj++] = root_sig_obj;
 
-			root_sig_assoc.NumExports = shader_exported_fcns.size();
-			root_sig_assoc.pExports = shader_exported_fcns.data();
+			root_sig_assoc.NumExports = 1;
+			root_sig_assoc.pExports = &shader_exported_fcns[0];
 			root_sig_assoc.pSubobjectToAssociate = &subobjects[current_subobj - 1];
 			
 			// Associate it with the symbols
@@ -657,7 +657,6 @@ int main(int argc, const char **argv) {
 		// Create the shader binding table
 		// This is a table of pointers to the shader code and their respective descriptor heaps
 		// ===============================
-		D3D12_GPU_DESCRIPTOR_HANDLE res_heap_handle = rt_shader_res_heap->GetGPUDescriptorHandleForHeapStart();
 
 		ID3D12StateObjectProperties *rt_pipeline_props = nullptr;
 		rt_state_object->QueryInterface(&rt_pipeline_props);
@@ -674,7 +673,7 @@ int main(int argc, const char **argv) {
 			// binding table in the dispatch rays must have its address start at a 64byte alignment,
 			// and use a 32byte stride. So pad these out to meet those requirements by making each
 			// entry 64 bytes
-			uint32_t sbt_table_size = 4 * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+			uint32_t sbt_table_size = 6 * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
 			// What's the alignment requirement here?
 			sbt_table_size += D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT -
 				sbt_table_size % D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
@@ -710,11 +709,14 @@ int main(int argc, const char **argv) {
 			// First we write the ray-gen shader identifier, followed by the ptr to its descriptor heap
 			std::memcpy(sbt_map, rt_pipeline_props->GetShaderIdentifier(L"RayGen"),
 				D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
-			sbt_map += D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
-			
-			std::memcpy(sbt_map, &res_heap_handle.ptr, sizeof(uint64_t));
+			// Set descriptor table binding for the raygen program
+			//*reinterpret_cast<D3D12_GPU_DESCRIPTOR_HANDLE*>(sbt_map) = rt_shader_res_heap->GetGPUDescriptorHandleForHeapStart();
+			D3D12_GPU_DESCRIPTOR_HANDLE res_heap_handle =
+				rt_shader_res_heap->GetGPUDescriptorHandleForHeapStart();
+			std::memcpy(sbt_map + D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES,
+				&res_heap_handle, sizeof(D3D12_GPU_DESCRIPTOR_HANDLE));
 			// Each entry must start at an alignment of 32bytes, so offset by the required alignment
-			sbt_map += D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
+			sbt_map += 2 * D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
 
 			std::memcpy(sbt_map, rt_pipeline_props->GetShaderIdentifier(L"Miss"),
 				D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
@@ -821,7 +823,8 @@ int main(int argc, const char **argv) {
 						nullptr, IID_PPV_ARGS(&rt_output_img)));
 
 					// Update the descriptor heap to the resized texture
-					D3D12_CPU_DESCRIPTOR_HANDLE heap_handle = rt_shader_res_heap->GetCPUDescriptorHandleForHeapStart();
+					D3D12_CPU_DESCRIPTOR_HANDLE heap_handle =
+						rt_shader_res_heap->GetCPUDescriptorHandleForHeapStart();
 
 					D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = { 0 };
 					uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
@@ -902,7 +905,8 @@ int main(int argc, const char **argv) {
 
 		// RayGen is first, and has a shader identifier and one param
 		dispatch_rays.RayGenerationShaderRecord.StartAddress = rt_shader_table->GetGPUVirtualAddress();
-		dispatch_rays.RayGenerationShaderRecord.SizeInBytes = 2 * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+		// The shader identifier + its descriptor table
+		dispatch_rays.RayGenerationShaderRecord.SizeInBytes = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES + sizeof(uint64_t);
 		
 		// Miss is next, followed by hit, each is just a shader identifier
 		dispatch_rays.MissShaderTable.StartAddress =
@@ -919,7 +923,7 @@ int main(int argc, const char **argv) {
 		dispatch_rays.Height = win_height;
 		dispatch_rays.Depth = 1;
 
-		cmd_list->SetDescriptorHeaps(1, rt_shader_res_heap.GetAddressOf());
+		//cmd_list->SetDescriptorHeaps(1, rt_shader_res_heap.GetAddressOf());
 		cmd_list->SetPipelineState1(rt_state_object.Get());
 
 		cmd_list->DispatchRays(&dispatch_rays);
