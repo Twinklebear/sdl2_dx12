@@ -173,6 +173,7 @@ int main(int argc, const char **argv) {
 	ComPtr<ID3D12DescriptorHeap> rt_shader_res_heap;
 	ComPtr<ID3D12Resource> rt_shader_table;
 	ComPtr<ID3D12RootSignature> rt_root_signature;
+	ComPtr<ID3D12RootSignature> rt_root_signature_dummy_global;
 	
 	{
 		const std::array<float, 24> vertex_data = {
@@ -513,12 +514,32 @@ int main(int argc, const char **argv) {
 			CHECK_ERR(device->CreateRootSignature(0, signature_blob->GetBufferPointer(),
 				signature_blob->GetBufferSize(), IID_PPV_ARGS(&rt_root_signature)));
 		}
+        // Make dummy global root signature
+		{
+			D3D12_ROOT_SIGNATURE_DESC root_desc = { 0 };
+			root_desc.NumParameters = 0;
+			root_desc.pParameters = nullptr;
+			root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+			// Create the root signature from the descriptor
+			ComPtr<ID3DBlob> signature_blob;
+			ComPtr<ID3DBlob> err_blob;
+			auto res = D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1,
+				&signature_blob, &err_blob);
+			if (FAILED(res)) {
+				std::cout << "Failed to serialize root signature: " << err_blob->GetBufferPointer() << "\n";
+				throw std::runtime_error("Failed to serialize root signature");
+			}
+
+			CHECK_ERR(device->CreateRootSignature(0, signature_blob->GetBufferPointer(),
+				signature_blob->GetBufferSize(), IID_PPV_ARGS(&rt_root_signature_dummy_global)));
+		}
 
 		// Now we can build the raytracing pipeline. It's made of a bunch of subobjects that
 		// describe the shader code libraries, hit groups, root signature associations and
 		// some other config stuff
 		std::vector<D3D12_STATE_SUBOBJECT> subobjects;
-		subobjects.resize(7);
+		subobjects.resize(8);
 		size_t current_subobj = 0;
 		{
 			D3D12_STATE_SUBOBJECT dxil_libs = { 0 };
@@ -550,7 +571,6 @@ int main(int argc, const char **argv) {
 			payload_subobj.pDesc = &shader_paylod_assoc;
 			subobjects[current_subobj++] = payload_subobj;
 		}
-
 		// The root signature needs two subobjects: one to declare it, and one to associate it
 		// with a set of symbols
 		D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION root_sig_assoc = { 0 };
@@ -572,6 +592,16 @@ int main(int argc, const char **argv) {
 			root_assoc.Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
 			root_assoc.pDesc = &root_sig_assoc;
 			subobjects[current_subobj++] = root_assoc;
+		}
+
+		D3D12_GLOBAL_ROOT_SIGNATURE rt_global_root_sig;
+		rt_global_root_sig.pGlobalRootSignature = rt_root_signature_dummy_global.Get();
+		{
+			// Declare the root signature
+			D3D12_STATE_SUBOBJECT root_sig_obj = { 0 };
+			root_sig_obj.Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
+			root_sig_obj.pDesc = &rt_global_root_sig;
+			subobjects[current_subobj++] = root_sig_obj;
 		}
 
 		// Add a subobject for the ray tracing pipeline configuration
@@ -907,7 +937,7 @@ int main(int argc, const char **argv) {
 		dispatch_rays.RayGenerationShaderRecord.StartAddress = rt_shader_table->GetGPUVirtualAddress();
 		// The shader identifier + its descriptor table
 		dispatch_rays.RayGenerationShaderRecord.SizeInBytes = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES + sizeof(uint64_t);
-		
+
 		// Miss is next, followed by hit, each is just a shader identifier
 		dispatch_rays.MissShaderTable.StartAddress =
 			rt_shader_table->GetGPUVirtualAddress() + 2 * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
@@ -925,6 +955,7 @@ int main(int argc, const char **argv) {
 
 		//cmd_list->SetDescriptorHeaps(1, rt_shader_res_heap.GetAddressOf());
 		cmd_list->SetPipelineState1(rt_state_object.Get());
+		cmd_list->SetComputeRootSignature(rt_root_signature_dummy_global.Get());
 
 		cmd_list->DispatchRays(&dispatch_rays);
 
